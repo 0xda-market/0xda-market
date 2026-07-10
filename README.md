@@ -17,7 +17,7 @@ The repository contains a runnable Rack application with:
 - idempotent quote acceptance and order execution;
 - synchronous and deferred execution;
 - optimistic concurrency and transactional in-memory storage;
-- a public JSON API;
+- an optionally authenticated public JSON API;
 - an authenticated operator API for `ManualProvider`;
 - a complete in-memory manual fulfillment workflow.
 
@@ -69,17 +69,21 @@ Ruby `3.3.11` is required.
 
 ```sh
 bundle install
-MANUAL_PROVIDER_TOKEN=replace-me bundle exec rackup
+PUBLIC_API_TOKEN=client-secret \
+MANUAL_PROVIDER_TOKEN=operator-secret \
+bundle exec rackup
 ```
 
 Without `MANUAL_PROVIDER_TOKEN`, the application starts in health-only mode
-with no registered capability. With the token set, it exposes:
+with no registered capability. `PUBLIC_API_TOKEN` protects every public route
+except `/health`. With both tokens set, the application exposes:
 
 - public API: `http://localhost:9292/v1/...`
 - operator API: `http://localhost:9292/operator/v1/...`
 - health check: `http://localhost:9292/health`
 
-Do not expose the operator API with a short or shared token.
+Production boot fails unless both tokens are configured. Do not reuse the same
+value for consumer and operator access.
 
 ## Public API example
 
@@ -87,6 +91,7 @@ Create an intent:
 
 ```sh
 curl -sS http://localhost:9292/v1/intents \
+  -H 'authorization: Bearer client-secret' \
   -H 'content-type: application/json' \
   -d '{
     "capability": "manual.fulfillment",
@@ -99,12 +104,15 @@ Continue the lifecycle using the returned identifiers:
 
 ```sh
 curl -sS -X POST http://localhost:9292/v1/intents/INTENT_ID/quotes \
+  -H 'authorization: Bearer client-secret' \
   -H 'content-type: application/json' -d '{}'
 
 curl -sS -X POST http://localhost:9292/v1/quotes/QUOTE_ID/accept \
+  -H 'authorization: Bearer client-secret' \
   -H 'content-type: application/json' -d '{}'
 
 curl -sS -X POST http://localhost:9292/v1/orders/ORDER_ID/execute \
+  -H 'authorization: Bearer client-secret' \
   -H 'content-type: application/json' -d '{}'
 ```
 
@@ -115,11 +123,11 @@ identifier in `data.attributes.progress.reference`.
 
 ```sh
 curl -sS http://localhost:9292/operator/v1/tasks?status=pending \
-  -H 'authorization: Bearer replace-me'
+  -H 'authorization: Bearer operator-secret'
 
 curl -sS -X POST \
   http://localhost:9292/operator/v1/tasks/TASK_ID/complete \
-  -H 'authorization: Bearer replace-me' \
+  -H 'authorization: Bearer operator-secret' \
   -H 'content-type: application/json' \
   -d '{
     "reference": "external-result-1",
@@ -132,7 +140,7 @@ An operator can reject a task instead:
 ```sh
 curl -sS -X POST \
   http://localhost:9292/operator/v1/tasks/TASK_ID/reject \
-  -H 'authorization: Bearer replace-me' \
+  -H 'authorization: Bearer operator-secret' \
   -H 'content-type: application/json' \
   -d '{
     "message": "cannot fulfill",
@@ -146,6 +154,37 @@ curl -sS -X POST \
 ```sh
 bundle exec rake
 ```
+
+The GitHub CI workflow runs the Ruby suite and builds the production Docker
+image. The Docker build also runs the suite before producing its runtime stage.
+
+## Docker
+
+```sh
+docker build --tag 0xda-market .
+docker run --rm -p 10000:10000 \
+  -e PUBLIC_API_TOKEN=client-secret \
+  -e MANUAL_PROVIDER_TOKEN=operator-secret \
+  0xda-market
+```
+
+The image runs as an unprivileged user, binds Puma to `0.0.0.0:$PORT`, and
+includes a container health check. Puma deliberately uses one process because
+the current stores are process-local.
+
+## Render
+
+`render.yaml` defines a free Frankfurt web service built from the repository's
+Dockerfile. It configures `/health`, prompts for both API tokens, and deploys
+only after all GitHub CI checks pass.
+
+1. Merge the deployment PR into `master`.
+2. In Render, create a new Blueprint and select this repository.
+3. Enter distinct values for `PUBLIC_API_TOKEN` and `MANUAL_PROVIDER_TOKEN`.
+4. Apply the Blueprint and wait for the health check to pass.
+
+Render rebuilds and deploys subsequent `master` commits after CI succeeds.
+Deploys and service restarts erase the current in-memory state.
 
 ## Architecture
 
@@ -170,9 +209,9 @@ The core never imports a provider implementation.
 
 - durable SQL-backed store;
 - durable manual task repository and task claiming;
-- request authentication and consumer ownership;
+- consumer identities and per-resource ownership;
 - capability-specific quote policies;
-- deployment packaging and production observability;
+- durable observability and audit events;
 - external providers added independently of the core.
 
 ## License

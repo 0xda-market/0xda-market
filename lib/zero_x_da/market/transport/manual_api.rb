@@ -4,6 +4,7 @@ require "json"
 require "rack"
 require "time"
 require_relative "../providers/manual_provider"
+require_relative "bearer_auth"
 
 module ZeroXDA
   module Market
@@ -17,12 +18,14 @@ module ZeroXDA
 
         def initialize(provider:, token:)
           @provider = provider
-          @token = Core::RecordSupport.identifier(token, field: "operator token")
+          @authentication = BearerAuth.new(token: token)
         end
 
         def call(environment)
           request = Rack::Request.new(environment)
-          return error_response(401, "unauthorized", "operator authentication failed") unless authorized?(request)
+          unless @authentication.authorized?(request)
+            return error_response(401, "unauthorized", "operator authentication failed")
+          end
 
           route(request)
         rescue JSON::ParserError
@@ -85,14 +88,6 @@ module ZeroXDA
           end
 
           error_response(404, "route_not_found", "route was not found")
-        end
-
-        def authorized?(request)
-          scheme, candidate = request.get_header("HTTP_AUTHORIZATION").to_s.split(" ", 2)
-          return false unless scheme == "Bearer" && candidate
-          return false unless candidate.bytesize == @token.bytesize
-
-          Rack::Utils.secure_compare(candidate, @token)
         end
 
         def request_document(request)

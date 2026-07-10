@@ -5,7 +5,11 @@ require "rack/mock"
 
 class RuntimeTest < Minitest::Test
   def test_starts_in_health_only_mode_without_an_operator_token
-    with_operator_token(nil) do
+    with_environment(
+      "RACK_ENV" => nil,
+      "PUBLIC_API_TOKEN" => nil,
+      "MANUAL_PROVIDER_TOKEN" => nil
+    ) do
       app = Rack::Builder.parse_file(File.expand_path("../config.ru", __dir__))
 
       health = Rack::MockRequest.new(app).get("/health")
@@ -14,53 +18,81 @@ class RuntimeTest < Minitest::Test
       intent = post_json(
         app,
         "/v1/intents",
-        capability: "manual.fulfillment",
-        payload: {}
+        { capability: "manual.fulfillment", payload: {} }
       )
       assert_equal 422, intent.status
     end
   end
 
   def test_mounts_manual_provider_when_an_operator_token_is_configured
-    with_operator_token("runtime-secret") do
+    with_environment(
+      "RACK_ENV" => "production",
+      "PUBLIC_API_TOKEN" => "client-secret",
+      "MANUAL_PROVIDER_TOKEN" => "operator-secret"
+    ) do
       app = Rack::Builder.parse_file(File.expand_path("../config.ru", __dir__))
 
       intent = post_json(
         app,
         "/v1/intents",
-        capability: "manual.fulfillment",
-        payload: { action: "deliver" }
+        { capability: "manual.fulfillment", payload: { action: "deliver" } },
+        authorization: "Bearer client-secret"
       )
       assert_equal 201, intent.status
+
+      public_unauthorized = post_json(
+        app,
+        "/v1/intents",
+        { capability: "manual.fulfillment", payload: {} }
+      )
+      assert_equal 401, public_unauthorized.status
 
       unauthorized = Rack::MockRequest.new(app).get("/operator/v1/tasks")
       assert_equal 401, unauthorized.status
     end
   end
 
-  private
+  def test_rejects_production_boot_with_missing_secrets
+    with_environment(
+      "RACK_ENV" => "production",
+      "PUBLIC_API_TOKEN" => nil,
+      "MANUAL_PROVIDER_TOKEN" => nil
+    ) do
+      error = assert_raises(RuntimeError) do
+        Rack::Builder.parse_file(File.expand_path("../config.ru", __dir__))
+      end
 
-  def with_operator_token(value)
-    previous = ENV["MANUAL_PROVIDER_TOKEN"]
-    if value
-      ENV["MANUAL_PROVIDER_TOKEN"] = value
-    else
-      ENV.delete("MANUAL_PROVIDER_TOKEN")
-    end
-    yield
-  ensure
-    if previous
-      ENV["MANUAL_PROVIDER_TOKEN"] = previous
-    else
-      ENV.delete("MANUAL_PROVIDER_TOKEN")
+      assert_includes error.message, "PUBLIC_API_TOKEN"
+      assert_includes error.message, "MANUAL_PROVIDER_TOKEN"
     end
   end
 
-  def post_json(app, path, body)
-    Rack::MockRequest.new(app).post(
-      path,
-      "CONTENT_TYPE" => "application/json",
-      input: JSON.generate(body)
-    )
+  private
+
+  def with_environment(changes)
+    previous = changes.to_h { |name, _value| [name, ENV[name]] }
+    changes.each do |name, value|
+      if value
+        ENV[name] = value
+      else
+        ENV.delete(name)
+      end
+    end
+    yield
+  ensure
+    previous.each do |name, value|
+      if value
+        ENV[name] = value
+      else
+        ENV.delete(name)
+      end
+    end
+  end
+
+  def post_json(app, path, body, authorization: nil)
+    headers = { "CONTENT_TYPE" => "application/json" }
+    headers["HTTP_AUTHORIZATION"] = authorization if authorization
+    headers[:input] = JSON.generate(body)
+    Rack::MockRequest.new(app).post(path, headers)
   end
 end

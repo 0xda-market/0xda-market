@@ -1,0 +1,7 @@
+.git
+.github
+.bundle
+coverage
+log
+tmp
+vendor/bundle

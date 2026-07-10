@@ -54,6 +54,37 @@ class JSONAPITest < Minitest::Test
     assert_equal({ "status" => "ok" }, JSON.parse(response.body))
   end
 
+  def test_bearer_auth_protects_the_api_but_not_health
+    clock = MutableClock.new
+    provider = TestProvider.new(clock: clock)
+    kernel, = build_kernel(provider: provider, clock: clock)
+    client = Rack::MockRequest.new(
+      ZeroXDA::Market::Transport::JSONAPI.new(
+        kernel: kernel,
+        token: "client-secret"
+      )
+    )
+
+    assert_equal 200, client.get("/health").status
+
+    unauthorized = post_json_with(
+      client,
+      "/v1/intents",
+      capability: "anything.operation",
+      payload: {}
+    )
+    assert_equal 401, unauthorized.status
+    assert_equal "unauthorized", JSON.parse(unauthorized.body).dig("errors", 0, "code")
+
+    authorized = client.post(
+      "/v1/intents",
+      "HTTP_AUTHORIZATION" => "Bearer client-secret",
+      "CONTENT_TYPE" => "application/json",
+      input: JSON.generate(capability: "anything.operation", payload: {})
+    )
+    assert_equal 201, authorized.status
+  end
+
   def test_exposes_deferred_execution_progress
     clock = MutableClock.new
     provider = TestProvider.new(clock: clock) do |_order, _idempotency_key|
