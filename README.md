@@ -19,7 +19,8 @@ The repository contains a runnable Rack application with:
 - optimistic concurrency and transactional PostgreSQL storage;
 - an optionally authenticated public JSON API;
 - an authenticated operator API for `ManualProvider`;
-- a durable manual fulfillment workflow.
+- a durable manual fulfillment workflow;
+- two webhook-based Telegram demo bots for the client and broker roles.
 
 When `DATABASE_URL` is configured, intents, quotes, orders and manual tasks are
 stored in the private PostgreSQL schema `market` and survive deploys and
@@ -59,7 +60,7 @@ without coupling that client to the core.
 1. A consumer creates an intent with capability `manual.fulfillment`.
 2. The consumer creates and accepts a quote.
 3. Executing the order creates one idempotent manual task and returns `pending`.
-4. An authenticated operator client lists and completes or rejects the task.
+4. An authenticated operator client claims, completes or rejects the task.
 5. Executing the pending order again resolves it from the operator decision.
 
 The provider delegates its task queue to a storage adapter. Production uses
@@ -79,14 +80,50 @@ bundle exec rackup
 
 Without `MANUAL_PROVIDER_TOKEN`, the application starts in health-only mode
 with no registered capability. `PUBLIC_API_TOKEN` protects every public route
-except `/health`. With both tokens set, the application exposes:
+except `/health`. With the API tokens set, the application exposes:
 
 - public API: `http://localhost:9292/v1/...`
 - operator API: `http://localhost:9292/operator/v1/...`
 - health check: `http://localhost:9292/health`
 
-Production boot fails unless both tokens and `DATABASE_URL` are configured. Do
-not reuse the same value for consumer and operator access.
+Production boot fails unless the API tokens, Telegram bot tokens, webhook URL
+and `DATABASE_URL` are configured. Do not reuse the same value for consumer
+and operator access.
+
+## Telegram demo bots
+
+The public product name shown in both bots is `zeroxda-market`:
+
+- `zeroxda_market_client_bot` accepts a free-form request, waits for a broker,
+  performs a mock payment and reports fulfillment;
+- `zeroxda_market_broker_bot` becomes `ready` on `/start`, receives every open
+  request, atomically accepts one and marks it complete after mock payment.
+
+The demo lifecycle is:
+
+```text
+client request -> broadcast to ready brokers -> one broker accepts
+               -> mock payment -> broker completes -> client receives result
+```
+
+Configure the bots with secrets rather than committing access tokens:
+
+```sh
+TELEGRAM_CLIENT_BOT_TOKEN='BotFather client token' \
+TELEGRAM_BROKER_BOT_TOKEN='BotFather broker token' \
+TELEGRAM_WEBHOOK_BASE_URL='https://zeroxda-market.onrender.com' \
+bundle exec ruby bin/configure_telegram_webhooks
+```
+
+The command derives separate webhook secrets from the bot tokens and registers
+these HTTPS endpoints:
+
+- `/telegram/client`
+- `/telegram/broker`
+
+The Docker startup command applies migrations and registers both webhooks
+before Puma starts. Broker presence, task assignment, mock-payment state and
+Telegram update deduplication are persisted in PostgreSQL.
 
 Apply migrations before starting a non-containerized production process:
 
@@ -136,6 +173,12 @@ identifier in `data.attributes.progress.reference`.
 ```sh
 curl -sS http://localhost:9292/operator/v1/tasks?status=pending \
   -H 'authorization: Bearer operator-secret'
+
+curl -sS -X POST \
+  http://localhost:9292/operator/v1/tasks/TASK_ID/claim \
+  -H 'authorization: Bearer operator-secret' \
+  -H 'content-type: application/json' \
+  -d '{"assignee":"operator-1"}'
 
 curl -sS -X POST \
   http://localhost:9292/operator/v1/tasks/TASK_ID/complete \
@@ -189,15 +232,19 @@ so concurrent deploy starts cannot apply the same migration twice.
 ## Render
 
 `render.yaml` defines a free Frankfurt web service built from the repository's
-Dockerfile. It configures `/health`, prompts for both API tokens and
-`DATABASE_URL`, and deploys only after all GitHub CI checks pass.
+Dockerfile. It configures `/health`, prompts for the API, database and Telegram
+secrets, and deploys only after all GitHub CI checks pass.
 
 1. Merge the deployment PR into `master`.
 2. In Render, create a new Blueprint and select this repository.
 3. Enter distinct values for `PUBLIC_API_TOKEN` and `MANUAL_PROVIDER_TOKEN`.
-4. Enter the Supabase Session Pooler URI as `DATABASE_URL`, replacing
+4. Enter the BotFather tokens as `TELEGRAM_CLIENT_BOT_TOKEN` and
+   `TELEGRAM_BROKER_BOT_TOKEN`.
+5. Keep `TELEGRAM_WEBHOOK_BASE_URL` set to
+   `https://zeroxda-market.onrender.com`.
+6. Enter the Supabase Session Pooler URI as `DATABASE_URL`, replacing
    `[YOUR-PASSWORD]` and appending `?sslmode=require`.
-5. Apply the Blueprint and wait for the health check to pass.
+7. Apply the Blueprint and wait for the health check to pass.
 
 Render rebuilds and deploys subsequent `master` commits after CI succeeds.
 The `market` schema is private to the backend connection; no domain tables are
@@ -207,7 +254,7 @@ created in Supabase's API-exposed `public` schema.
 
 ```text
 Consumer clients                 Operator clients
-iOS / CLI / bot / HTTP           iOS / CLI / WhatsApp bot
+iOS / CLI / Telegram / HTTP      iOS / CLI / Telegram / WhatsApp
         |                                  |
         v                                  v
 Public JSON API                     Manual operator API
@@ -224,7 +271,7 @@ The core never imports a provider implementation.
 
 ## Next boundaries
 
-- manual task claiming and operator leases;
+- operator lease expiry and task reassignment;
 - consumer identities and per-resource ownership;
 - capability-specific quote policies;
 - durable observability and audit events;

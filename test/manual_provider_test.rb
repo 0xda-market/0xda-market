@@ -61,6 +61,38 @@ class ManualProviderTest < Minitest::Test
     assert_equal 1, @provider.tasks.length
   end
 
+  def test_claims_a_task_once_and_keeps_the_same_assignee_idempotent
+    order = accepted_order
+    pending = @provider.execute(order: order, idempotency_key: "claim-key")
+
+    claimed = @provider.claim_task(pending.reference, assignee: "broker-1")
+    repeated = @provider.claim_task(pending.reference, assignee: "broker-1")
+
+    assert_equal "claimed", claimed.status
+    assert_equal "broker-1", claimed.claimed_by
+    assert_equal claimed.version, repeated.version
+
+    error = assert_raises(ZeroXDA::Market::Core::Conflict) do
+      @provider.claim_task(pending.reference, assignee: "broker-2")
+    end
+    assert_equal "task_already_claimed", error.code
+  end
+
+  def test_completes_a_claimed_task
+    order = accepted_order
+    pending = @provider.execute(order: order, idempotency_key: "claimed-completion")
+    @provider.claim_task(pending.reference, assignee: "broker-1")
+
+    completed = @provider.complete_task(
+      pending.reference,
+      reference: "telegram-result",
+      data: { delivered: true }
+    )
+
+    assert_equal "completed", completed.status
+    assert_equal "broker-1", completed.claimed_by
+  end
+
   def test_rejection_becomes_a_non_retryable_provider_failure
     order = accepted_order
     pending = @provider.execute(order: order, idempotency_key: "reject-key")

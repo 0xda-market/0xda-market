@@ -76,6 +76,21 @@ class ManualAPITest < Minitest::Test
     assert_equal "out_of_scope", error.code
   end
 
+  def test_claims_a_pending_task
+    order = accepted_order
+    pending = @kernel.execute_order(order.id)
+
+    response = authorized_post(
+      "/v1/tasks/#{pending.progress.fetch("reference")}/claim",
+      assignee: "broker-1"
+    )
+
+    assert_equal 200, response.status
+    attributes = JSON.parse(response.body).dig("data", "attributes")
+    assert_equal "claimed", attributes.fetch("status")
+    assert_equal "broker-1", attributes.fetch("claimed_by")
+  end
+
   private
 
   def accepted_order

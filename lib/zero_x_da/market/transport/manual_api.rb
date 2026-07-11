@@ -74,6 +74,14 @@ module ZeroXDA
             end
           end
 
+          if (match = path.match(%r{\A/v1/tasks/([^/]+)/claim\z}))
+            if method == "POST"
+              body = request_document(request)
+              task = @provider.claim_task(match[1], assignee: body.fetch("assignee"))
+              return resource_response(200, task)
+            end
+          end
+
           if (match = path.match(%r{\A/v1/tasks/([^/]+)/reject\z}))
             if method == "POST"
               body = request_document(request)
@@ -113,6 +121,7 @@ module ZeroXDA
               "context" => task.context,
               "terms" => task.terms,
               "status" => task.status,
+              "claimed_by" => task.claimed_by,
               "result" => task.result,
               "failure" => task.failure,
               "created_at" => timestamp(task.created_at),

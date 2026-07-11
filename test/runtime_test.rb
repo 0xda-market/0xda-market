@@ -9,7 +9,10 @@ class RuntimeTest < Minitest::Test
       "RACK_ENV" => nil,
       "PUBLIC_API_TOKEN" => nil,
       "MANUAL_PROVIDER_TOKEN" => nil,
-      "DATABASE_URL" => nil
+      "DATABASE_URL" => nil,
+      "TELEGRAM_CLIENT_BOT_TOKEN" => nil,
+      "TELEGRAM_BROKER_BOT_TOKEN" => nil,
+      "TELEGRAM_WEBHOOK_BASE_URL" => nil
     ) do
       app = Rack::Builder.parse_file(File.expand_path("../config.ru", __dir__))
 
@@ -30,7 +33,10 @@ class RuntimeTest < Minitest::Test
       "RACK_ENV" => "development",
       "PUBLIC_API_TOKEN" => "client-secret",
       "MANUAL_PROVIDER_TOKEN" => "operator-secret",
-      "DATABASE_URL" => nil
+      "DATABASE_URL" => nil,
+      "TELEGRAM_CLIENT_BOT_TOKEN" => nil,
+      "TELEGRAM_BROKER_BOT_TOKEN" => nil,
+      "TELEGRAM_WEBHOOK_BASE_URL" => nil
     ) do
       app = Rack::Builder.parse_file(File.expand_path("../config.ru", __dir__))
 
@@ -54,12 +60,33 @@ class RuntimeTest < Minitest::Test
     end
   end
 
+  def test_mounts_both_telegram_webhooks_when_the_bots_are_configured
+    with_environment(
+      "RACK_ENV" => "development",
+      "PUBLIC_API_TOKEN" => "client-secret",
+      "MANUAL_PROVIDER_TOKEN" => "operator-secret",
+      "DATABASE_URL" => nil,
+      "TELEGRAM_CLIENT_BOT_TOKEN" => "client-bot-token",
+      "TELEGRAM_BROKER_BOT_TOKEN" => "broker-bot-token",
+      "TELEGRAM_WEBHOOK_BASE_URL" => "https://example.test"
+    ) do
+      app = Rack::Builder.parse_file(File.expand_path("../config.ru", __dir__))
+      client = Rack::MockRequest.new(app)
+
+      assert_equal 405, client.get("/telegram/client").status
+      assert_equal 405, client.get("/telegram/broker").status
+    end
+  end
+
   def test_rejects_production_boot_with_missing_secrets
     with_environment(
       "RACK_ENV" => "production",
       "PUBLIC_API_TOKEN" => nil,
       "MANUAL_PROVIDER_TOKEN" => nil,
-      "DATABASE_URL" => nil
+      "DATABASE_URL" => nil,
+      "TELEGRAM_CLIENT_BOT_TOKEN" => nil,
+      "TELEGRAM_BROKER_BOT_TOKEN" => nil,
+      "TELEGRAM_WEBHOOK_BASE_URL" => nil
     ) do
       error = assert_raises(RuntimeError) do
         Rack::Builder.parse_file(File.expand_path("../config.ru", __dir__))
@@ -68,6 +95,9 @@ class RuntimeTest < Minitest::Test
       assert_includes error.message, "PUBLIC_API_TOKEN"
       assert_includes error.message, "MANUAL_PROVIDER_TOKEN"
       assert_includes error.message, "DATABASE_URL"
+      assert_includes error.message, "TELEGRAM_CLIENT_BOT_TOKEN"
+      assert_includes error.message, "TELEGRAM_BROKER_BOT_TOKEN"
+      assert_includes error.message, "TELEGRAM_WEBHOOK_BASE_URL"
     end
   end
 

@@ -1,0 +1,18 @@
+# frozen_string_literal: true
+
+require "bundler/setup"
+require_relative "../lib/zero_x_da/market/telegram/bot_api"
+require_relative "../lib/zero_x_da/market/telegram/configuration"
+
+configuration = ZeroXDA::Market::Telegram::Configuration.from_env(ENV)
+exit 0 unless configuration
+
+%w[client broker].each do |role|
+  api = ZeroXDA::Market::Telegram::BotAPI.new(token: configuration.token(role))
+  api.set_webhook(
+    url: configuration.endpoint(role),
+    secret_token: configuration.secret_token(role)
+  )
+end
+
+puts "configured Telegram webhooks for client and broker bots"
