@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: 0xda-market
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeployTrigger: checksPass
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: RACK_ENV
+        value: production
+      - key: PUBLIC_API_TOKEN
+        sync: false
+      - key: MANUAL_PROVIDER_TOKEN
+        sync: false

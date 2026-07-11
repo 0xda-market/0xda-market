@@ -4,6 +4,7 @@ require "json"
 require "rack"
 require "time"
 require_relative "../core/kernel"
+require_relative "bearer_auth"
 
 module ZeroXDA
   module Market
@@ -15,12 +16,18 @@ module ZeroXDA
           "cache-control" => "no-store"
         }.freeze
 
-        def initialize(kernel:)
+        def initialize(kernel:, token: nil)
           @kernel = kernel
+          @authentication = token && BearerAuth.new(token: token)
         end
 
         def call(environment)
-          route(Rack::Request.new(environment))
+          request = Rack::Request.new(environment)
+          unless public_route?(request) || authorized?(request)
+            return error_response(401, "unauthorized", "client authentication failed")
+          end
+
+          route(request)
         rescue JSON::ParserError
           error_response(400, "invalid_json", "request body is not valid JSON")
         rescue KeyError => error
@@ -47,6 +54,14 @@ module ZeroXDA
         end
 
         private
+
+        def public_route?(request)
+          request.get? && request.path_info == "/health"
+        end
+
+        def authorized?(request)
+          !@authentication || @authentication.authorized?(request)
+        end
 
         def route(request)
           method = request.request_method
