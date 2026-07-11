@@ -18,9 +18,3 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
-      - key: TELEGRAM_CLIENT_BOT_TOKEN
-        sync: false
-      - key: TELEGRAM_BROKER_BOT_TOKEN
-        sync: false
-      - key: TELEGRAM_WEBHOOK_BASE_URL
-        value: https://zeroxda-market.onrender.com
