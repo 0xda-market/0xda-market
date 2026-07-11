@@ -54,6 +54,23 @@ class JSONAPITest < Minitest::Test
     assert_equal({ "status" => "ok" }, JSON.parse(response.body))
   end
 
+  def test_health_endpoint_reports_unavailable_when_storage_is_not_ready
+    clock = MutableClock.new
+    provider = TestProvider.new(clock: clock)
+    kernel, = build_kernel(provider: provider, clock: clock)
+    client = Rack::MockRequest.new(
+      ZeroXDA::Market::Transport::JSONAPI.new(
+        kernel: kernel,
+        readiness: -> { false }
+      )
+    )
+
+    response = client.get("/health")
+
+    assert_equal 503, response.status
+    assert_equal({ "status" => "unavailable" }, JSON.parse(response.body))
+  end
+
   def test_bearer_auth_protects_the_api_but_not_health
     clock = MutableClock.new
     provider = TestProvider.new(clock: clock)

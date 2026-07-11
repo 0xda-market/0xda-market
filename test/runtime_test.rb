@@ -8,7 +8,8 @@ class RuntimeTest < Minitest::Test
     with_environment(
       "RACK_ENV" => nil,
       "PUBLIC_API_TOKEN" => nil,
-      "MANUAL_PROVIDER_TOKEN" => nil
+      "MANUAL_PROVIDER_TOKEN" => nil,
+      "DATABASE_URL" => nil
     ) do
       app = Rack::Builder.parse_file(File.expand_path("../config.ru", __dir__))
 
@@ -26,9 +27,10 @@ class RuntimeTest < Minitest::Test
 
   def test_mounts_manual_provider_when_an_operator_token_is_configured
     with_environment(
-      "RACK_ENV" => "production",
+      "RACK_ENV" => "development",
       "PUBLIC_API_TOKEN" => "client-secret",
-      "MANUAL_PROVIDER_TOKEN" => "operator-secret"
+      "MANUAL_PROVIDER_TOKEN" => "operator-secret",
+      "DATABASE_URL" => nil
     ) do
       app = Rack::Builder.parse_file(File.expand_path("../config.ru", __dir__))
 
@@ -56,7 +58,8 @@ class RuntimeTest < Minitest::Test
     with_environment(
       "RACK_ENV" => "production",
       "PUBLIC_API_TOKEN" => nil,
-      "MANUAL_PROVIDER_TOKEN" => nil
+      "MANUAL_PROVIDER_TOKEN" => nil,
+      "DATABASE_URL" => nil
     ) do
       error = assert_raises(RuntimeError) do
         Rack::Builder.parse_file(File.expand_path("../config.ru", __dir__))
@@ -64,6 +67,7 @@ class RuntimeTest < Minitest::Test
 
       assert_includes error.message, "PUBLIC_API_TOKEN"
       assert_includes error.message, "MANUAL_PROVIDER_TOKEN"
+      assert_includes error.message, "DATABASE_URL"
     end
   end
 

@@ -16,13 +16,15 @@ The repository contains a runnable Rack application with:
 - provider contracts and normalized provider failures;
 - idempotent quote acceptance and order execution;
 - synchronous and deferred execution;
-- optimistic concurrency and transactional in-memory storage;
+- optimistic concurrency and transactional PostgreSQL storage;
 - an optionally authenticated public JSON API;
 - an authenticated operator API for `ManualProvider`;
-- a complete in-memory manual fulfillment workflow.
+- a durable manual fulfillment workflow.
 
-The current store is intentionally ephemeral. Restarting the process removes
-all records and manual tasks.
+When `DATABASE_URL` is configured, intents, quotes, orders and manual tasks are
+stored in the private PostgreSQL schema `market` and survive deploys and
+process restarts. Development can still run without PostgreSQL using the
+in-memory adapters.
 
 ## Lifecycle
 
@@ -60,8 +62,8 @@ without coupling that client to the core.
 4. An authenticated operator client lists and completes or rejects the task.
 5. Executing the pending order again resolves it from the operator decision.
 
-The provider and its operator task queue are in memory. Durable storage and
-task claiming are the next infrastructure boundary, not core concerns.
+The provider delegates its task queue to a storage adapter. Production uses
+PostgreSQL while the provider and the core remain database-agnostic.
 
 ## Run
 
@@ -71,6 +73,7 @@ Ruby `3.3.11` is required.
 bundle install
 PUBLIC_API_TOKEN=client-secret \
 MANUAL_PROVIDER_TOKEN=operator-secret \
+DATABASE_URL='postgresql://postgres:password@localhost:5432/0xda_market' \
 bundle exec rackup
 ```
 
@@ -82,8 +85,17 @@ except `/health`. With both tokens set, the application exposes:
 - operator API: `http://localhost:9292/operator/v1/...`
 - health check: `http://localhost:9292/health`
 
-Production boot fails unless both tokens are configured. Do not reuse the same
-value for consumer and operator access.
+Production boot fails unless both tokens and `DATABASE_URL` are configured. Do
+not reuse the same value for consumer and operator access.
+
+Apply migrations before starting a non-containerized production process:
+
+```sh
+DATABASE_URL='postgresql://...' bundle exec ruby bin/migrate
+```
+
+The Docker image performs this migration step automatically before Puma
+starts. `/health` returns `503` if PostgreSQL is unavailable.
 
 ## Public API example
 
@@ -155,8 +167,9 @@ curl -sS -X POST \
 bundle exec rake
 ```
 
-The GitHub CI workflow runs the Ruby suite and builds the production Docker
-image. The Docker build also runs the suite before producing its runtime stage.
+The GitHub CI workflow runs the Ruby suite against PostgreSQL, verifies restart
+persistence, and builds the production Docker image. The Docker build also runs
+the database-independent suite before producing its runtime stage.
 
 ## Docker
 
@@ -165,26 +178,30 @@ docker build --tag 0xda-market .
 docker run --rm -p 10000:10000 \
   -e PUBLIC_API_TOKEN=client-secret \
   -e MANUAL_PROVIDER_TOKEN=operator-secret \
+  -e DATABASE_URL='postgresql://...' \
   0xda-market
 ```
 
 The image runs as an unprivileged user, binds Puma to `0.0.0.0:$PORT`, and
-includes a container health check. Puma deliberately uses one process because
-the current stores are process-local.
+includes a container health check. Migrations use a PostgreSQL advisory lock,
+so concurrent deploy starts cannot apply the same migration twice.
 
 ## Render
 
 `render.yaml` defines a free Frankfurt web service built from the repository's
-Dockerfile. It configures `/health`, prompts for both API tokens, and deploys
-only after all GitHub CI checks pass.
+Dockerfile. It configures `/health`, prompts for both API tokens and
+`DATABASE_URL`, and deploys only after all GitHub CI checks pass.
 
 1. Merge the deployment PR into `master`.
 2. In Render, create a new Blueprint and select this repository.
 3. Enter distinct values for `PUBLIC_API_TOKEN` and `MANUAL_PROVIDER_TOKEN`.
-4. Apply the Blueprint and wait for the health check to pass.
+4. Enter the Supabase Session Pooler URI as `DATABASE_URL`, replacing
+   `[YOUR-PASSWORD]` and appending `?sslmode=require`.
+5. Apply the Blueprint and wait for the health check to pass.
 
 Render rebuilds and deploys subsequent `master` commits after CI succeeds.
-Deploys and service restarts erase the current in-memory state.
+The `market` schema is private to the backend connection; no domain tables are
+created in Supabase's API-exposed `public` schema.
 
 ## Architecture
 
@@ -207,8 +224,7 @@ The core never imports a provider implementation.
 
 ## Next boundaries
 
-- durable SQL-backed store;
-- durable manual task repository and task claiming;
+- manual task claiming and operator leases;
 - consumer identities and per-resource ownership;
 - capability-specific quote policies;
 - durable observability and audit events;

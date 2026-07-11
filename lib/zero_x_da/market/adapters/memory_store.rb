@@ -68,6 +68,10 @@ module ZeroXDA
           record
         end
 
+        def healthy?
+          true
+        end
+
         private
 
         def collection!(name)
@@ -83,4 +87,3 @@ module ZeroXDA
     end
   end
 end
-

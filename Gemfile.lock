@@ -1,14 +1,19 @@
 GEM
   remote: https://rubygems.org/
   specs:
+    bigdecimal (4.1.2)
     minitest (5.27.0)
     nio4r (2.7.5)
+    pg (1.6.3)
+    pg (1.6.3-x86_64-linux)
     puma (7.2.1)
       nio4r (~> 2.0)
     rack (3.2.6)
     rackup (2.3.1)
       rack (>= 3)
     rake (13.4.2)
+    sequel (5.106.0)
+      bigdecimal
 
 PLATFORMS
   ruby
@@ -16,10 +21,12 @@ PLATFORMS
 
 DEPENDENCIES
   minitest (~> 5.25)
+  pg (~> 1.5)
   puma (~> 7.2)
   rack (~> 3.2)
   rackup (~> 2.1)
   rake (~> 13.2)
+  sequel (~> 5.0)
 
 RUBY VERSION
    ruby 3.3.11p205

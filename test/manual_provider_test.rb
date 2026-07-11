@@ -48,6 +48,7 @@ class ManualProviderTest < Minitest::Test
     assert_equal "operator-result-1", completed.result.fetch("reference")
     assert completed.result.dig("data", "delivered")
     assert_equal 1, completed.attempts
+    assert_equal 1, @provider.fetch_task(task.id).version
   end
 
   def test_reuses_one_task_for_repeated_provider_execution

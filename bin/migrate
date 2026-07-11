@@ -1,0 +1,20 @@
+# frozen_string_literal: true
+
+require "bundler/setup"
+require_relative "../lib/zero_x_da/market/adapters/postgres_database"
+require_relative "../lib/zero_x_da/market/adapters/postgres_migrator"
+
+url = ENV.fetch("DATABASE_URL")
+database = ZeroXDA::Market::Adapters::PostgresDatabase.new(
+  url: url,
+  max_connections: 1
+)
+
+begin
+  ZeroXDA::Market::Adapters::PostgresMigrator.new(
+    database: database,
+    path: File.expand_path("../db/migrations", __dir__)
+  ).migrate!
+ensure
+  database.disconnect
+end

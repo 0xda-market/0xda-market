@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 require "digest"
-require "monitor"
 require_relative "../core/contracts"
+require_relative "memory_task_store"
 
 module ZeroXDA
   module Market
@@ -21,7 +21,8 @@ module ZeroXDA
                       :result,
                       :failure,
                       :created_at,
-                      :updated_at
+                      :updated_at,
+                      :version
 
           def initialize(
             id:,
@@ -34,7 +35,8 @@ module ZeroXDA
             result: nil,
             failure: nil,
             created_at:,
-            updated_at: created_at
+            updated_at: created_at,
+            version: 0
           )
             raise ArgumentError, "task status is invalid" unless STATUSES.include?(status)
 
@@ -49,13 +51,23 @@ module ZeroXDA
             @failure = Core::RecordSupport.optional_document(failure, field: "failure")
             @created_at = Core::RecordSupport.time(created_at, field: "created_at")
             @updated_at = Core::RecordSupport.time(updated_at, field: "updated_at")
+            unless version.is_a?(Integer) && version >= 0
+              raise ArgumentError, "task version must be a non-negative integer"
+            end
+            @version = version
             freeze
           end
         end
 
         attr_reader :key
 
-        def initialize(key:, clock:, quote_terms: { fulfillment: "manual" }, quote_ttl: nil)
+        def initialize(
+          key:,
+          clock:,
+          quote_terms: { fulfillment: "manual" },
+          quote_ttl: nil,
+          task_store: MemoryTaskStore.new
+        )
           @key = Core::RecordSupport.identifier(key, field: "provider key")
           @clock = clock
           @quote_terms = Core::RecordSupport.document(quote_terms, field: "quote terms")
@@ -64,9 +76,7 @@ module ZeroXDA
           end
 
           @quote_ttl = quote_ttl
-          @tasks = {}
-          @task_ids_by_idempotency_key = {}
-          @monitor = Monitor.new
+          @task_store = task_store
         end
 
         def quote(intent:)
@@ -79,9 +89,7 @@ module ZeroXDA
         end
 
         def execute(order:, idempotency_key:)
-          task = @monitor.synchronize do
-            find_or_create_task(order, idempotency_key)
-          end
+          task = find_or_create_task(order, idempotency_key)
 
           case task.status
           when "pending"
@@ -106,15 +114,11 @@ module ZeroXDA
 
         def tasks(status: nil)
           validate_status_filter!(status)
-          @monitor.synchronize do
-            selected = @tasks.values
-            selected = selected.select { |task| task.status == status } if status
-            selected.sort_by(&:created_at)
-          end
+          @task_store.list(status: status)
         end
 
         def find_task(id)
-          @monitor.synchronize { @tasks[id.to_s] }
+          @task_store.find(id)
         end
 
         def fetch_task(id)
@@ -122,12 +126,13 @@ module ZeroXDA
         end
 
         def complete_task(id, reference: nil, data: {})
-          @monitor.synchronize do
-            task = fetch_task(id)
+          @task_store.transaction do |store|
+            task = store.fetch(id)
             return task if task.status == "completed"
 
             ensure_pending!(task, "complete")
             replace_task(
+              store,
               task,
               status: "completed",
               result: { reference: reference, data: data },
@@ -138,12 +143,13 @@ module ZeroXDA
         end
 
         def reject_task(id, message:, code: "manual_rejection", details: {})
-          @monitor.synchronize do
-            task = fetch_task(id)
+          @task_store.transaction do |store|
+            task = store.fetch(id)
             return task if task.status == "rejected"
 
             ensure_pending!(task, "reject")
             replace_task(
+              store,
               task,
               status: "rejected",
               result: nil,
@@ -165,11 +171,12 @@ module ZeroXDA
             idempotency_key,
             field: "idempotency key"
           )
-          existing_id = @task_ids_by_idempotency_key[normalized_key]
-          return @tasks.fetch(existing_id) if existing_id
+          id = task_id_for(normalized_key)
+          existing = @task_store.find(id)
+          return existing if existing
 
           task = Task.new(
-            id: task_id_for(normalized_key),
+            id: id,
             order_id: order.id,
             capability: order.capability,
             payload: order.payload,
@@ -177,16 +184,18 @@ module ZeroXDA
             terms: order.terms,
             created_at: current_time
           )
-          @tasks[task.id] = task
-          @task_ids_by_idempotency_key[normalized_key] = task.id
-          task
+          @task_store.insert(task)
+        rescue Core::Conflict => error
+          raise unless error.code == "duplicate_record"
+
+          @task_store.fetch(id)
         end
 
         def task_id_for(idempotency_key)
           "manual-#{Digest::SHA256.hexdigest(idempotency_key)[0, 32]}"
         end
 
-        def replace_task(task, **changes)
+        def replace_task(store, task, **changes)
           attributes = {
             id: task.id,
             order_id: task.order_id,
@@ -198,10 +207,11 @@ module ZeroXDA
             result: task.result,
             failure: task.failure,
             created_at: task.created_at,
-            updated_at: task.updated_at
+            updated_at: task.updated_at,
+            version: task.version
           }
-          replacement = Task.new(**attributes.merge(changes))
-          @tasks[replacement.id] = replacement
+          replacement = Task.new(**attributes.merge(changes, version: task.version + 1))
+          store.replace(replacement, expected_version: task.version)
         end
 
         def ensure_pending!(task, event)

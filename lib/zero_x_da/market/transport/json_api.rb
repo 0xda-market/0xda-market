@@ -16,9 +16,10 @@ module ZeroXDA
           "cache-control" => "no-store"
         }.freeze
 
-        def initialize(kernel:, token: nil)
+        def initialize(kernel:, token: nil, readiness: -> { true })
           @kernel = kernel
           @authentication = token && BearerAuth.new(token: token)
+          @readiness = readiness
         end
 
         def call(environment)
@@ -67,7 +68,10 @@ module ZeroXDA
           method = request.request_method
           path = request.path_info
 
-          return json_response(200, { "status" => "ok" }) if method == "GET" && path == "/health"
+          if method == "GET" && path == "/health"
+            ready = @readiness.call
+            return json_response(ready ? 200 : 503, { "status" => ready ? "ok" : "unavailable" })
+          end
 
           if method == "POST" && path == "/v1/intents"
             body = request_document(request)

@@ -16,3 +16,5 @@ services:
         sync: false
       - key: MANUAL_PROVIDER_TOKEN
         sync: false
+      - key: DATABASE_URL
+        sync: false
