@@ -32,6 +32,10 @@ module ZeroXDA
           end
         end
 
+        def active_users
+          @store.list_users(status: "active")
+        end
+
         private
 
         def authenticate_once(provider_user_id, provider_data)
