@@ -71,7 +71,13 @@ module ZeroXDA
 
           if method == "GET" && path == "/health"
             ready = @readiness.call
-            return json_response(ready ? 200 : 503, { "status" => ready ? "ok" : "unavailable" })
+            return json_response(
+              ready ? 200 : 503,
+              {
+                "status" => ready ? "ok" : "unavailable",
+                "server_time" => Time.now.utc.iso8601(6)
+              }
+            )
           end
 
           if method == "POST" && path == "/v1/auth/telegram" && @identity_service
@@ -82,6 +88,21 @@ module ZeroXDA
             )
             status = authentication.created ? 201 : 200
             return resource_response(status, present_authentication(authentication))
+          end
+
+          if method == "GET" && path == "/v1/users" && @identity_service
+            unless request.params["status"] == "active"
+              raise ArgumentError, "status must be active"
+            end
+
+            users = @identity_service.active_users
+            return json_response(
+              200,
+              {
+                "data" => users.map { |entry| present_user_identity(entry) },
+                "meta" => { "count" => users.length }
+              }
+            )
           end
 
           if method == "POST" && path == "/v1/intents"
@@ -187,6 +208,18 @@ module ZeroXDA
               }
             },
             "meta" => { "created" => authentication.created }
+          }
+        end
+
+        def present_user_identity(entry)
+          {
+            "type" => "user",
+            "id" => entry.user.id,
+            "attributes" => {
+              "telegram_user_id" => entry.identity.provider_user_id,
+              "role" => entry.user.role,
+              "status" => entry.user.status
+            }
           }
         end
 
