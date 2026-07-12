@@ -55,6 +55,17 @@ The first request creates a `client` user and Telegram identity and returns
 refresh provider profile data. The model can add Apple, email or other
 identities without changing the user record.
 
+An authenticated service can list active users without exposing Telegram
+profile data:
+
+```sh
+curl -sS 'http://localhost:9292/v1/users?status=active' \
+  -H 'authorization: Bearer client-secret'
+```
+
+Each item contains only the internal UUID, Telegram user ID, role and account
+status. `/health` also returns the current UTC server time.
+
 ## Lifecycle
 
 ```text
