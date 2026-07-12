@@ -31,6 +31,12 @@ module ZeroXDA
         end
       end
 
+      class Forbidden < Error
+        def initialize(message = "access is forbidden", details: {})
+          super(message, code: "forbidden", details: details)
+        end
+      end
+
       class ConcurrencyConflict < Conflict
         def initialize(resource, id)
           super(
