@@ -55,6 +55,32 @@ The first request creates a `client` user and Telegram identity and returns
 refresh provider profile data. The model can add Apple, email or other
 identities without changing the user record.
 
+An authenticated service can list active users without exposing Telegram
+profile data:
+
+```sh
+curl -sS 'http://localhost:9292/v1/users?status=active' \
+  -H 'authorization: Bearer client-secret'
+```
+
+Each item contains only the internal UUID, Telegram user ID, role and account
+status. `/health` also returns the current UTC server time.
+
+The initial administrator is bootstrapped with `ADMIN_TELEGRAM_IDS`, a
+comma-separated list of numeric Telegram IDs. An authenticated admin can then
+promote another registered Telegram user by ID or current username:
+
+```sh
+curl -sS http://localhost:9292/v1/admin/users/set-admin \
+  -H 'authorization: Bearer client-secret' \
+  -H 'content-type: application/json' \
+  -d '{"actor_telegram_user_id":"77","target":"@example"}'
+```
+
+The target must have authenticated through `/start`. Role assignment is
+transactional and idempotent; the endpoint returns `403` unless the actor has
+the persisted `admin` role.
+
 ## Lifecycle
 
 ```text

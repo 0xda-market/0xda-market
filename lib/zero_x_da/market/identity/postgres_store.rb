@@ -31,11 +31,44 @@ module ZeroXDA
           row && deserialize_identity(row)
         end
 
+        def find_identity_by_username(provider:, username:)
+          row = @identities.where(provider: provider).all.find do |identity|
+            data = document(identity.fetch(:provider_data))
+            data["username"].to_s.casecmp?(username.to_s)
+          end
+          row && deserialize_identity(row)
+        end
+
+        def list_users(status:)
+          @users.where(status: status).order(:created_at).all.filter_map do |row|
+            identity_row = @identities.where(
+              user_id: row.fetch(:id),
+              provider: "telegram"
+            ).first
+            next unless identity_row
+
+            UserIdentity.new(
+              user: deserialize_user(row),
+              identity: deserialize_identity(identity_row)
+            )
+          end
+        end
+
         def insert_user(user)
           @users.insert(serialize_user(user))
           user
         rescue Sequel::UniqueConstraintViolation
           raise duplicate("user", user.id)
+        end
+
+        def replace_user(user, expected_version:)
+          count = @users.where(id: user.id, version: expected_version)
+                        .update(serialize_user(user))
+          return user if count == 1
+
+          raise Core::NotFound.new("user", user.id) unless @users.where(id: user.id).get(:id)
+
+          raise Core::ConcurrencyConflict.new("user", user.id)
         end
 
         def insert_identity(identity)

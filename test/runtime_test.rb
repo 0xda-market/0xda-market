@@ -18,6 +18,7 @@ class RuntimeTest < Minitest::Test
 
       health = Rack::MockRequest.new(app).get("/health")
       assert_equal 200, health.status
+      assert_match(/\A\d{4}-\d{2}-\d{2}T/, JSON.parse(health.body).fetch("server_time"))
 
       intent = post_json(
         app,

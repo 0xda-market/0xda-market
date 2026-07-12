@@ -51,7 +51,9 @@ class JSONAPITest < Minitest::Test
     response = @client.get("/health")
 
     assert_equal 200, response.status
-    assert_equal({ "status" => "ok" }, JSON.parse(response.body))
+    document = JSON.parse(response.body)
+    assert_equal "ok", document.fetch("status")
+    assert_match(/\A\d{4}-\d{2}-\d{2}T/, document.fetch("server_time"))
   end
 
   def test_health_endpoint_reports_unavailable_when_storage_is_not_ready
@@ -68,7 +70,9 @@ class JSONAPITest < Minitest::Test
     response = client.get("/health")
 
     assert_equal 503, response.status
-    assert_equal({ "status" => "unavailable" }, JSON.parse(response.body))
+    document = JSON.parse(response.body)
+    assert_equal "unavailable", document.fetch("status")
+    assert_match(/\A\d{4}-\d{2}-\d{2}T/, document.fetch("server_time"))
   end
 
   def test_bearer_auth_protects_the_api_but_not_health

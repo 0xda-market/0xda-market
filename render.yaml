@@ -18,3 +18,5 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
+      - key: ADMIN_TELEGRAM_IDS
+        sync: false

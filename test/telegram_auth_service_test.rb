@@ -65,4 +65,72 @@ class TelegramAuthServiceTest < Minitest::Test
 
     assert_includes error.message, "positive integer"
   end
+
+  def test_bootstrap_identity_authenticates_as_admin
+    service = build_service(bootstrap_admin_ids: [77])
+
+    authentication = service.authenticate(
+      provider_user_id: 77,
+      provider_data: { chat_id: "77", username: "owner" }
+    )
+
+    assert_equal "admin", authentication.user.role
+  end
+
+  def test_admin_promotes_a_registered_user_by_username
+    service = build_service(bootstrap_admin_ids: [77])
+    service.authenticate(
+      provider_user_id: 77,
+      provider_data: { chat_id: "77", username: "owner" }
+    )
+    service.authenticate(
+      provider_user_id: 78,
+      provider_data: { chat_id: "780", username: "Target_User" }
+    )
+
+    assignment = service.set_admin(
+      actor_provider_user_id: 77,
+      target: "@target_user"
+    )
+
+    assert assignment.changed
+    assert_equal "admin", assignment.user.role
+    assert_equal "78", assignment.identity.provider_user_id
+    assert_equal "780", assignment.identity.provider_data.fetch("chat_id")
+  end
+
+  def test_admin_assignment_by_telegram_id_is_idempotent
+    service = build_service(bootstrap_admin_ids: [77])
+    service.authenticate(provider_user_id: 77, provider_data: { chat_id: "77" })
+    service.authenticate(provider_user_id: 78, provider_data: { chat_id: "78" })
+
+    first = service.set_admin(actor_provider_user_id: 77, target: "78")
+    second = service.set_admin(actor_provider_user_id: 77, target: "78")
+
+    assert first.changed
+    refute second.changed
+    assert_equal first.user.id, second.user.id
+  end
+
+  def test_client_cannot_promote_another_user
+    @service.authenticate(provider_user_id: 77, provider_data: { chat_id: "77" })
+    @service.authenticate(provider_user_id: 78, provider_data: { chat_id: "78" })
+
+    error = assert_raises(ZeroXDA::Market::Core::Forbidden) do
+      @service.set_admin(actor_provider_user_id: 77, target: "78")
+    end
+
+    assert_equal "forbidden", error.code
+  end
+
+  private
+
+  def build_service(bootstrap_admin_ids: [])
+    ZeroXDA::Market::Identity::TelegramAuthService.new(
+      store: ZeroXDA::Market::Identity::MemoryStore.new,
+      clock: @clock,
+      id_generator: SequenceIDs.new,
+      bootstrap_admin_ids: bootstrap_admin_ids
+    )
+  end
 end

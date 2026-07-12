@@ -67,6 +67,8 @@ module ZeroXDA
       end
 
       Authentication = Data.define(:user, :identity, :created)
+      UserIdentity = Data.define(:user, :identity)
+      RoleAssignment = Data.define(:user, :identity, :actor, :changed)
     end
   end
 end

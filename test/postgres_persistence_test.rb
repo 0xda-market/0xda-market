@@ -113,6 +113,37 @@ class PostgresPersistenceTest < Minitest::Test
     assert_equal "770", second.identity.provider_data.fetch("chat_id")
   end
 
+  def test_admin_role_assignment_survives_reconnection
+    clock = MutableClock.new
+    identifiers = [
+      "00000000-0000-4000-8000-000000000011",
+      "00000000-0000-4000-8000-000000000012",
+      "00000000-0000-4000-8000-000000000013",
+      "00000000-0000-4000-8000-000000000014"
+    ].each
+    service = ZeroXDA::Market::Identity::TelegramAuthService.new(
+      store: ZeroXDA::Market::Identity::PostgresStore.new(database: @database),
+      clock: clock,
+      id_generator: -> { identifiers.next },
+      bootstrap_admin_ids: [77]
+    )
+    service.authenticate(
+      provider_user_id: 77,
+      provider_data: { chat_id: "77", username: "owner" }
+    )
+    target = service.authenticate(
+      provider_user_id: 78,
+      provider_data: { chat_id: "78", username: "target_user" }
+    )
+    service.set_admin(actor_provider_user_id: 77, target: "@target_user")
+
+    @database.disconnect
+    @database = connect
+    store = ZeroXDA::Market::Identity::PostgresStore.new(database: @database)
+
+    assert_equal "admin", store.find_user(target.user.id).role
+  end
+
   def test_telegram_broker_and_demo_order_state_survive_reconnection
     clock = MutableClock.new
     kernel, provider = build_application(@database, clock, SequenceIDs.new)

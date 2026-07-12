@@ -43,9 +43,45 @@ module ZeroXDA
           end
         end
 
+        def find_identity_by_username(provider:, username:)
+          @monitor.synchronize do
+            @identities.values.find do |identity|
+              identity.provider == provider &&
+                identity.provider_data["username"].to_s.casecmp?(username.to_s)
+            end
+          end
+        end
+
+        def list_users(status:)
+          @monitor.synchronize do
+            @users.values
+                  .select { |user| user.status == status }
+                  .sort_by(&:created_at)
+                  .filter_map do |user|
+              identity = @identities.values.find do |item|
+                item.user_id == user.id && item.provider == "telegram"
+              end
+              UserIdentity.new(user: user, identity: identity) if identity
+            end
+          end
+        end
+
         def insert_user(user)
           @monitor.synchronize do
             raise duplicate("user", user.id) if @users.key?(user.id)
+
+            @users[user.id] = user
+          end
+          user
+        end
+
+        def replace_user(user, expected_version:)
+          @monitor.synchronize do
+            current = @users[user.id]
+            raise Core::NotFound.new("user", user.id) unless current
+            unless current.version == expected_version
+              raise Core::ConcurrencyConflict.new("user", user.id)
+            end
 
             @users[user.id] = user
           end

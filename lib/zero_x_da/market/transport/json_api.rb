@@ -41,6 +41,8 @@ module ZeroXDA
           )
         rescue Core::NotFound => error
           core_error_response(404, error)
+        rescue Core::Forbidden => error
+          core_error_response(403, error)
         rescue Core::UnknownCapability, ArgumentError => error
           if error.is_a?(Core::Error)
             core_error_response(422, error)
@@ -71,7 +73,13 @@ module ZeroXDA
 
           if method == "GET" && path == "/health"
             ready = @readiness.call
-            return json_response(ready ? 200 : 503, { "status" => ready ? "ok" : "unavailable" })
+            return json_response(
+              ready ? 200 : 503,
+              {
+                "status" => ready ? "ok" : "unavailable",
+                "server_time" => Time.now.utc.iso8601(6)
+              }
+            )
           end
 
           if method == "POST" && path == "/v1/auth/telegram" && @identity_service
@@ -82,6 +90,30 @@ module ZeroXDA
             )
             status = authentication.created ? 201 : 200
             return resource_response(status, present_authentication(authentication))
+          end
+
+          if method == "GET" && path == "/v1/users" && @identity_service
+            unless request.params["status"] == "active"
+              raise ArgumentError, "status must be active"
+            end
+
+            users = @identity_service.active_users
+            return json_response(
+              200,
+              {
+                "data" => users.map { |entry| present_user_identity(entry) },
+                "meta" => { "count" => users.length }
+              }
+            )
+          end
+
+          if method == "POST" && path == "/v1/admin/users/set-admin" && @identity_service
+            body = request_document(request)
+            assignment = @identity_service.set_admin(
+              actor_provider_user_id: body.fetch("actor_telegram_user_id"),
+              target: body.fetch("target")
+            )
+            return resource_response(200, present_role_assignment(assignment))
           end
 
           if method == "POST" && path == "/v1/intents"
@@ -187,6 +219,35 @@ module ZeroXDA
               }
             },
             "meta" => { "created" => authentication.created }
+          }
+        end
+
+        def present_user_identity(entry)
+          {
+            "type" => "user",
+            "id" => entry.user.id,
+            "attributes" => {
+              "telegram_user_id" => entry.identity.provider_user_id,
+              "role" => entry.user.role,
+              "status" => entry.user.status
+            }
+          }
+        end
+
+        def present_role_assignment(assignment)
+          {
+            "type" => "user",
+            "id" => assignment.user.id,
+            "attributes" => {
+              "telegram_user_id" => assignment.identity.provider_user_id,
+              "telegram_chat_id" => assignment.identity.provider_data["chat_id"],
+              "role" => assignment.user.role,
+              "status" => assignment.user.status
+            },
+            "meta" => {
+              "changed" => assignment.changed,
+              "assigned_by" => assignment.actor.id
+            }
           }
         end
 

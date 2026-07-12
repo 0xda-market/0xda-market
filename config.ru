@@ -28,6 +28,7 @@ public_token = ENV["PUBLIC_API_TOKEN"]
 operator_token = ENV["MANUAL_PROVIDER_TOKEN"]
 database_url = ENV["DATABASE_URL"]
 telegram_configuration = ZeroXDA::Market::Telegram::Configuration.from_env(ENV)
+admin_telegram_ids = ENV.fetch("ADMIN_TELEGRAM_IDS", "").split(",").map(&:strip)
 
 if environment == "production"
   required_secrets = {
@@ -82,7 +83,8 @@ public_api = ZeroXDA::Market::Transport::JSONAPI.new(
   readiness: -> { store.healthy? },
   identity_service: ZeroXDA::Market::Identity::TelegramAuthService.new(
     store: identity_store,
-    clock: clock
+    clock: clock,
+    bootstrap_admin_ids: admin_telegram_ids
   )
 )
 
