@@ -91,6 +91,25 @@ jobs:
             --retry-all-errors \
             "$health_url" > /dev/null
 
+          public_api_token="$(curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $RENDER_API_KEY" \
+            "$RENDER_API_URL/services/$service_id/env-vars/PUBLIC_API_TOKEN" \
+            | jq -er '.value')"
+          manual_provider_token="$(curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $RENDER_API_KEY" \
+            "$RENDER_API_URL/services/$service_id/env-vars/MANUAL_PROVIDER_TOKEN" \
+            | jq -er '.value')"
+          echo "::add-mask::$public_api_token"
+          echo "::add-mask::$manual_provider_token"
+
+          base_url="https://$service_slug.onrender.com"
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer $public_api_token" \
+            "$base_url/v1/users?status=active" > /dev/null
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer $manual_provider_token" \
+            "$base_url/operator/v1/tasks?status=pending" > /dev/null
+
           {
             echo "## Render test deploy"
             echo
@@ -98,4 +117,5 @@ jobs:
             echo "- URL: $health_url"
             echo "- Deploy: \`$deploy_id\`"
             echo "- Status: \`live\`"
+            echo "- Smoke tests: \`public API + operator API passed\`"
           } >> "$GITHUB_STEP_SUMMARY"
