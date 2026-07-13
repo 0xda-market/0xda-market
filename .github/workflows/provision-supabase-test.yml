@@ -97,6 +97,28 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Synchronize existing test database password
+        if: steps.existing.outputs.exists == 'true'
+        env:
+          PROJECT_REF: ${{ steps.existing.outputs.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          request_body="$(jq -n \
+            --arg password "$SUPABASE_TEST_DB_PASSWORD" \
+            '{password: $password}')"
+
+          curl --fail-with-body --silent --show-error \
+            --request PATCH \
+            --header "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            --header "Content-Type: application/json" \
+            --data "$request_body" \
+            "$SUPABASE_API_URL/projects/$PROJECT_REF/database/password" \
+            > /dev/null
+
+          echo "Synchronized database password for '$PROJECT_NAME': $PROJECT_REF"
+
       - name: Create Supabase test project
         if: steps.existing.outputs.exists != 'true'
         id: create
