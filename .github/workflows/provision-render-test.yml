@@ -85,11 +85,15 @@ jobs:
           match_count="$(jq 'length' <<<"$matches")"
 
           if [[ "$match_count" == "0" ]]; then
+            public_api_token="$(openssl rand -hex 32)"
+            manual_provider_token="$(openssl rand -hex 32)"
             request_body="$(jq -n \
               --arg name "$TEST_SERVICE_NAME" \
               --arg owner_id "$OWNER_ID" \
               --arg repo "$REPO" \
               --arg database_url "$database_url" \
+              --arg public_api_token "$public_api_token" \
+              --arg manual_provider_token "$manual_provider_token" \
               '{
                 type: "web_service",
                 name: $name,
@@ -100,28 +104,36 @@ jobs:
                 envVars: [
                   {key: "RACK_ENV", value: "production"},
                   {key: "DATABASE_URL", value: $database_url},
-                  {key: "PUBLIC_API_TOKEN", generateValue: true},
-                  {key: "MANUAL_PROVIDER_TOKEN", generateValue: true}
+                  {key: "PUBLIC_API_TOKEN", value: $public_api_token},
+                  {key: "MANUAL_PROVIDER_TOKEN", value: $manual_provider_token}
                 ],
                 serviceDetails: {
                   runtime: "docker",
                   plan: "free",
                   region: "frankfurt",
-                  healthCheckPath: "/health",
-                  maxShutdownDelaySeconds: 30,
-                  envSpecificDetails: {
-                    dockerfilePath: "./Dockerfile",
-                    dockerContext: "."
-                  }
+                  healthCheckPath: "/health"
                 }
               }')"
 
-            response="$(curl --fail-with-body --silent --show-error \
+            response_file="$(mktemp)"
+            http_status="$(curl --silent --show-error \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
               --request POST \
               --header "Authorization: Bearer $RENDER_API_KEY" \
               --header "Content-Type: application/json" \
               --data "$request_body" \
               "$RENDER_API_URL/services")"
+
+            if [[ ! "$http_status" =~ ^2 ]]; then
+              error_message="$(jq -r '.message // "No error message returned"' "$response_file" 2>/dev/null || echo "Unreadable error response")"
+              rm -f "$response_file"
+              echo "Render rejected service creation (HTTP $http_status): $error_message" >&2
+              exit 1
+            fi
+
+            response="$(<"$response_file")"
+            rm -f "$response_file"
 
             service_id="$(jq -er '.service.id' <<<"$response")"
             service_slug="$(jq -er '.service.slug' <<<"$response")"
@@ -156,6 +168,8 @@ jobs:
             ensure_generated_env() {
               local key="$1"
               local status
+              local generated_value
+              local body
               status="$(curl --silent --show-error \
                 --output /dev/null \
                 --write-out '%{http_code}' \
@@ -164,11 +178,13 @@ jobs:
               case "$status" in
                 200) ;;
                 404)
+                  generated_value="$(openssl rand -hex 32)"
+                  body="$(jq -n --arg value "$generated_value" '{value: $value}')"
                   curl --fail-with-body --silent --show-error \
                     --request PUT \
                     --header "Authorization: Bearer $RENDER_API_KEY" \
                     --header "Content-Type: application/json" \
-                    --data '{"generateValue":true}' \
+                    --data "$body" \
                     "$RENDER_API_URL/services/$service_id/env-vars/$key" > /dev/null
                   ;;
                 *)
