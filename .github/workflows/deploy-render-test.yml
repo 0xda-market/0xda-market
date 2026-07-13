@@ -1,0 +1,101 @@
+name: Deploy Render test service
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: render-test-deploy
+  cancel-in-progress: true
+
+env:
+  RENDER_API_URL: https://api.render.com/v1
+  TEST_SERVICE_NAME: 0xda-market-test
+
+jobs:
+  deploy:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Deploy tested master commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RENDER_API_KEY" || { echo "RENDER_API_KEY is missing" >&2; exit 1; }
+
+          services_json="$(curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $RENDER_API_KEY" \
+            --header "Accept: application/json" \
+            "$RENDER_API_URL/services?name=$TEST_SERVICE_NAME&limit=20")"
+          matches="$(jq --arg name "$TEST_SERVICE_NAME" \
+            '[.[] | .service | select(.name == $name)]' <<<"$services_json")"
+          match_count="$(jq 'length' <<<"$matches")"
+
+          if [[ "$match_count" == "0" ]]; then
+            echo "Render test service is not provisioned yet; skipping deploy."
+            exit 0
+          fi
+          if [[ "$match_count" != "1" ]]; then
+            echo "Expected one Render service named '$TEST_SERVICE_NAME'; found $match_count." >&2
+            exit 1
+          fi
+
+          service_id="$(jq -r '.[0].id' <<<"$matches")"
+          service_slug="$(jq -r '.[0].slug' <<<"$matches")"
+          request_body="$(jq -n --arg commit_id "$COMMIT_SHA" '{commitId: $commit_id}')"
+          deploy_json="$(curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $RENDER_API_KEY" \
+            --header "Content-Type: application/json" \
+            --data "$request_body" \
+            "$RENDER_API_URL/services/$service_id/deploys")"
+          deploy_id="$(jq -er '.id' <<<"$deploy_json")"
+
+          deploy_status=""
+          for _ in {1..90}; do
+            deploy_json="$(curl --fail-with-body --silent --show-error \
+              --header "Authorization: Bearer $RENDER_API_KEY" \
+              "$RENDER_API_URL/services/$service_id/deploys/$deploy_id")"
+            deploy_status="$(jq -r '.status' <<<"$deploy_json")"
+            case "$deploy_status" in
+              live) break ;;
+              build_failed|update_failed|pre_deploy_failed|canceled|deactivated)
+                echo "Render deploy failed with status: $deploy_status" >&2
+                exit 1
+                ;;
+            esac
+            sleep 10
+          done
+
+          if [[ "$deploy_status" != "live" ]]; then
+            echo "Timed out waiting for Render deploy; last status: $deploy_status" >&2
+            exit 1
+          fi
+
+          health_url="https://$service_slug.onrender.com/health"
+          curl --fail --silent --show-error \
+            --retry 12 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            "$health_url" > /dev/null
+
+          {
+            echo "## Render test deploy"
+            echo
+            echo "- Commit: \`$COMMIT_SHA\`"
+            echo "- URL: $health_url"
+            echo "- Deploy: \`$deploy_id\`"
+            echo "- Status: \`live\`"
+          } >> "$GITHUB_STEP_SUMMARY"

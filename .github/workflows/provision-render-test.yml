@@ -1,0 +1,247 @@
+name: Provision Render test service
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type provision-0xda-market-test to confirm
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: render-test-service-provisioning
+  cancel-in-progress: false
+
+env:
+  RENDER_API_URL: https://api.render.com/v1
+  PRODUCTION_SERVICE_NAME: 0xda-market
+  TEST_SERVICE_NAME: 0xda-market-test
+  SUPABASE_TEST_PROJECT_REF: cyxstycjamjdgvqmglsp
+
+jobs:
+  provision:
+    if: github.ref == 'refs/heads/master' && inputs.confirmation == 'provision-0xda-market-test'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SUPABASE_TEST_DB_PASSWORD: ${{ secrets.SUPABASE_TEST_DB_PASSWORD }}
+    steps:
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RENDER_API_KEY" || { echo "RENDER_API_KEY is missing" >&2; exit 1; }
+          test -n "$SUPABASE_TEST_DB_PASSWORD" || { echo "SUPABASE_TEST_DB_PASSWORD is missing" >&2; exit 1; }
+
+      - name: Resolve production service
+        id: production
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          services_json="$(curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $RENDER_API_KEY" \
+            --header "Accept: application/json" \
+            "$RENDER_API_URL/services?name=$PRODUCTION_SERVICE_NAME&limit=20")"
+
+          matches="$(jq --arg name "$PRODUCTION_SERVICE_NAME" \
+            '[.[] | .service | select(.name == $name)]' <<<"$services_json")"
+          match_count="$(jq 'length' <<<"$matches")"
+          if [[ "$match_count" != "1" ]]; then
+            echo "Expected exactly one Render service named '$PRODUCTION_SERVICE_NAME'; found $match_count." >&2
+            exit 1
+          fi
+
+          owner_id="$(jq -r '.[0].ownerId' <<<"$matches")"
+          repo="$(jq -r '.[0].repo' <<<"$matches")"
+          test -n "$owner_id" && [[ "$owner_id" != "null" ]]
+          test -n "$repo" && [[ "$repo" != "null" ]]
+
+          echo "owner_id=$owner_id" >> "$GITHUB_OUTPUT"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update Render test service
+        id: service
+        env:
+          OWNER_ID: ${{ steps.production.outputs.owner_id }}
+          REPO: ${{ steps.production.outputs.repo }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          encoded_password="$(jq -rn --arg value "$SUPABASE_TEST_DB_PASSWORD" '$value | @uri')"
+          database_url="postgresql://postgres.$SUPABASE_TEST_PROJECT_REF:$encoded_password@aws-0-eu-central-1.pooler.supabase.com:5432/postgres?sslmode=require"
+
+          services_json="$(curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $RENDER_API_KEY" \
+            --header "Accept: application/json" \
+            "$RENDER_API_URL/services?name=$TEST_SERVICE_NAME&limit=20")"
+          matches="$(jq --arg name "$TEST_SERVICE_NAME" \
+            '[.[] | .service | select(.name == $name)]' <<<"$services_json")"
+          match_count="$(jq 'length' <<<"$matches")"
+
+          if [[ "$match_count" == "0" ]]; then
+            request_body="$(jq -n \
+              --arg name "$TEST_SERVICE_NAME" \
+              --arg owner_id "$OWNER_ID" \
+              --arg repo "$REPO" \
+              --arg database_url "$database_url" \
+              '{
+                type: "web_service",
+                name: $name,
+                ownerId: $owner_id,
+                repo: $repo,
+                branch: "master",
+                autoDeploy: "no",
+                envVars: [
+                  {key: "RACK_ENV", value: "production"},
+                  {key: "DATABASE_URL", value: $database_url},
+                  {key: "PUBLIC_API_TOKEN", generateValue: true},
+                  {key: "MANUAL_PROVIDER_TOKEN", generateValue: true}
+                ],
+                serviceDetails: {
+                  runtime: "docker",
+                  plan: "free",
+                  region: "frankfurt",
+                  healthCheckPath: "/health",
+                  maxShutdownDelaySeconds: 30,
+                  envSpecificDetails: {
+                    dockerfilePath: "./Dockerfile",
+                    dockerContext: "."
+                  }
+                }
+              }')"
+
+            response="$(curl --fail-with-body --silent --show-error \
+              --request POST \
+              --header "Authorization: Bearer $RENDER_API_KEY" \
+              --header "Content-Type: application/json" \
+              --data "$request_body" \
+              "$RENDER_API_URL/services")"
+
+            service_id="$(jq -er '.service.id' <<<"$response")"
+            service_slug="$(jq -er '.service.slug' <<<"$response")"
+            deploy_id="$(jq -er '.deployId' <<<"$response")"
+            echo "Created Render service '$TEST_SERVICE_NAME': $service_id"
+          elif [[ "$match_count" == "1" ]]; then
+            service_id="$(jq -r '.[0].id' <<<"$matches")"
+            service_slug="$(jq -r '.[0].slug' <<<"$matches")"
+
+            update_body="$(jq -n --arg repo "$REPO" \
+              '{repo: $repo, branch: "master", autoDeploy: "no"}')"
+            curl --fail-with-body --silent --show-error \
+              --request PATCH \
+              --header "Authorization: Bearer $RENDER_API_KEY" \
+              --header "Content-Type: application/json" \
+              --data "$update_body" \
+              "$RENDER_API_URL/services/$service_id" > /dev/null
+
+            put_env() {
+              local key="$1"
+              local value="$2"
+              local body
+              body="$(jq -n --arg value "$value" '{value: $value}')"
+              curl --fail-with-body --silent --show-error \
+                --request PUT \
+                --header "Authorization: Bearer $RENDER_API_KEY" \
+                --header "Content-Type: application/json" \
+                --data "$body" \
+                "$RENDER_API_URL/services/$service_id/env-vars/$key" > /dev/null
+            }
+
+            ensure_generated_env() {
+              local key="$1"
+              local status
+              status="$(curl --silent --show-error \
+                --output /dev/null \
+                --write-out '%{http_code}' \
+                --header "Authorization: Bearer $RENDER_API_KEY" \
+                "$RENDER_API_URL/services/$service_id/env-vars/$key")"
+              case "$status" in
+                200) ;;
+                404)
+                  curl --fail-with-body --silent --show-error \
+                    --request PUT \
+                    --header "Authorization: Bearer $RENDER_API_KEY" \
+                    --header "Content-Type: application/json" \
+                    --data '{"generateValue":true}' \
+                    "$RENDER_API_URL/services/$service_id/env-vars/$key" > /dev/null
+                  ;;
+                *)
+                  echo "Unable to inspect Render environment variable '$key' (HTTP $status)." >&2
+                  exit 1
+                  ;;
+              esac
+            }
+
+            put_env RACK_ENV production
+            put_env DATABASE_URL "$database_url"
+            ensure_generated_env PUBLIC_API_TOKEN
+            ensure_generated_env MANUAL_PROVIDER_TOKEN
+
+            deploy_response="$(curl --fail-with-body --silent --show-error \
+              --request POST \
+              --header "Authorization: Bearer $RENDER_API_KEY" \
+              --header "Content-Type: application/json" \
+              --data '{"clearCache":"do_not_clear"}' \
+              "$RENDER_API_URL/services/$service_id/deploys")"
+            deploy_id="$(jq -er '.id' <<<"$deploy_response")"
+            echo "Updated Render service '$TEST_SERVICE_NAME': $service_id"
+          else
+            echo "Expected at most one Render service named '$TEST_SERVICE_NAME'; found $match_count." >&2
+            exit 1
+          fi
+
+          echo "id=$service_id" >> "$GITHUB_OUTPUT"
+          echo "slug=$service_slug" >> "$GITHUB_OUTPUT"
+          echo "deploy_id=$deploy_id" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for deploy and verify health
+        env:
+          SERVICE_ID: ${{ steps.service.outputs.id }}
+          SERVICE_SLUG: ${{ steps.service.outputs.slug }}
+          DEPLOY_ID: ${{ steps.service.outputs.deploy_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          deploy_status=""
+          for _ in {1..90}; do
+            deploy_json="$(curl --fail-with-body --silent --show-error \
+              --header "Authorization: Bearer $RENDER_API_KEY" \
+              "$RENDER_API_URL/services/$SERVICE_ID/deploys/$DEPLOY_ID")"
+            deploy_status="$(jq -r '.status' <<<"$deploy_json")"
+            case "$deploy_status" in
+              live) break ;;
+              build_failed|update_failed|pre_deploy_failed|canceled|deactivated)
+                echo "Render deploy failed with status: $deploy_status" >&2
+                exit 1
+                ;;
+            esac
+            sleep 10
+          done
+
+          if [[ "$deploy_status" != "live" ]]; then
+            echo "Timed out waiting for Render deploy; last status: $deploy_status" >&2
+            exit 1
+          fi
+
+          health_url="https://$SERVICE_SLUG.onrender.com/health"
+          curl --fail --silent --show-error \
+            --retry 12 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            "$health_url" > /dev/null
+
+          {
+            echo "## Render test service"
+            echo
+            echo "- Service: \`$TEST_SERVICE_NAME\`"
+            echo "- URL: $health_url"
+            echo "- Deploy: \`$DEPLOY_ID\`"
+            echo "- Status: \`live\`"
+          } >> "$GITHUB_STEP_SUMMARY"
