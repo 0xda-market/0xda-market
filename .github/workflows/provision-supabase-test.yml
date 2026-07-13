@@ -1,0 +1,143 @@
+name: Provision Supabase test project
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type create-0xda-market-test to confirm
+        required: true
+        type: string
+      organization_slug:
+        description: Supabase organization slug (leave empty when the account has one organization)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-test-project-provisioning
+  cancel-in-progress: false
+
+env:
+  SUPABASE_API_URL: https://api.supabase.com/v1
+  PROJECT_NAME: 0xda-market-test
+
+jobs:
+  provision:
+    if: github.ref == 'refs/heads/master' && inputs.confirmation == 'create-0xda-market-test'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_TEST_DB_PASSWORD: ${{ secrets.SUPABASE_TEST_DB_PASSWORD }}
+      REQUESTED_ORGANIZATION_SLUG: ${{ inputs.organization_slug }}
+    steps:
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_ACCESS_TOKEN" || { echo "SUPABASE_ACCESS_TOKEN is missing" >&2; exit 1; }
+          test -n "$SUPABASE_TEST_DB_PASSWORD" || { echo "SUPABASE_TEST_DB_PASSWORD is missing" >&2; exit 1; }
+
+      - name: Resolve Supabase organization
+        id: organization
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          organizations_json="$(curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            "$SUPABASE_API_URL/organizations")"
+
+          if [[ -n "$REQUESTED_ORGANIZATION_SLUG" ]]; then
+            matches="$(jq --arg slug "$REQUESTED_ORGANIZATION_SLUG" \
+              '[.[] | select(.slug == $slug)] | length' <<<"$organizations_json")"
+            if [[ "$matches" != "1" ]]; then
+              echo "Supabase organization '$REQUESTED_ORGANIZATION_SLUG' is unavailable to this token." >&2
+              exit 1
+            fi
+            organization_slug="$REQUESTED_ORGANIZATION_SLUG"
+          else
+            organization_count="$(jq 'length' <<<"$organizations_json")"
+            if [[ "$organization_count" != "1" ]]; then
+              echo "Expected exactly one Supabase organization; found $organization_count." >&2
+              echo "Run the workflow again with one of these organization slugs:" >&2
+              jq -r '.[] | "- \(.name): \(.slug)"' <<<"$organizations_json" >&2
+              exit 1
+            fi
+            organization_slug="$(jq -r '.[0].slug' <<<"$organizations_json")"
+          fi
+
+          echo "slug=$organization_slug" >> "$GITHUB_OUTPUT"
+
+      - name: Check for an existing test project
+        id: existing
+        env:
+          ORGANIZATION_SLUG: ${{ steps.organization.outputs.slug }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          projects_json="$(curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            "$SUPABASE_API_URL/projects")"
+
+          existing_ref="$(jq -r \
+            --arg name "$PROJECT_NAME" \
+            --arg organization_slug "$ORGANIZATION_SLUG" \
+            '[.[] | select(.name == $name and .organization_slug == $organization_slug)][0].ref // empty' \
+            <<<"$projects_json")"
+
+          if [[ -n "$existing_ref" ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "ref=$existing_ref" >> "$GITHUB_OUTPUT"
+            echo "Supabase project '$PROJECT_NAME' already exists: $existing_ref"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create Supabase test project
+        if: steps.existing.outputs.exists != 'true'
+        id: create
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          request_body="$(jq -n \
+            --arg db_pass "$SUPABASE_TEST_DB_PASSWORD" \
+            --arg name "$PROJECT_NAME" \
+            --arg organization_slug "${{ steps.organization.outputs.slug }}" \
+            '{
+              db_pass: $db_pass,
+              name: $name,
+              organization_slug: $organization_slug,
+              region_selection: {type: "specific", code: "eu-central-1"}
+            }')"
+
+          project_json="$(curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            --header "Content-Type: application/json" \
+            --data "$request_body" \
+            "$SUPABASE_API_URL/projects")"
+
+          project_ref="$(jq -er '.ref' <<<"$project_json")"
+          echo "ref=$project_ref" >> "$GITHUB_OUTPUT"
+          echo "Created Supabase project '$PROJECT_NAME': $project_ref"
+
+      - name: Write workflow summary
+        env:
+          EXISTING_REF: ${{ steps.existing.outputs.ref }}
+          CREATED_REF: ${{ steps.create.outputs.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          project_ref="${EXISTING_REF:-$CREATED_REF}"
+          {
+            echo "## Supabase test project"
+            echo
+            echo "- Name: \`$PROJECT_NAME\`"
+            echo "- Project ref: \`$project_ref\`"
+            echo "- Region: \`eu-central-1\` (Frankfurt)"
+          } >> "$GITHUB_STEP_SUMMARY"
