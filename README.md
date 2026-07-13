@@ -318,6 +318,20 @@ Keep `TELEGRAM_CLIENT_BOT_TOKEN`, `TELEGRAM_BROKER_BOT_TOKEN` and
 Render service.
 
 Render rebuilds and deploys subsequent `master` commits after CI succeeds.
+
+The test deployment workflow also keeps both dedicated Telegram bot services
+attached to the test stack. After a successful `master` CI run it:
+
+1. deploys `0xda-market-test` and runs the protected API smoke tests;
+2. reads that service's public and operator tokens through the Render API;
+3. sets both bot services' `MARKET_API_URL` to
+   `https://zeroxda-market-test.onrender.com` and synchronizes the matching
+   token;
+4. redeploys the bot services and verifies their Telegram webhooks.
+
+The bots never connect to PostgreSQL directly. Their database environment is
+selected by the core API: the test core uses the Supabase test `DATABASE_URL`,
+so all bot requests are isolated from production data.
 The `market` schema is private to the backend connection; no domain tables are
 created in Supabase's API-exposed `public` schema.
 
