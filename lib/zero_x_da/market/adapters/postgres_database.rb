@@ -14,7 +14,11 @@ module ZeroXDA
             max_connections: max_connections,
             test: false
           )
-          @connection.extension :pg_json, :connection_validator
+          @connection.extension(
+            :pg_json,
+            :connection_validator,
+            :transaction_connection_validator
+          )
           @connection.pool.connection_validation_timeout = 30
         end
 
