@@ -16,6 +16,8 @@ concurrency:
 
 env:
   RENDER_API_URL: https://api.render.com/v1
+  RENDER_PROJECT_NAME: 0xda
+  RENDER_TEST_ENVIRONMENT_NAME: Test
   TEST_SERVICE_NAME: 0xda-market-test
 
 jobs:
@@ -29,6 +31,14 @@ jobs:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Ensure Render test environment
+        shell: bash
+        run: bash script/ensure_render_test_environment.sh
+
       - name: Deploy tested master commit
         shell: bash
         run: |
