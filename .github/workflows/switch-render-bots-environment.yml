@@ -1,0 +1,47 @@
+name: Switch Telegram bots environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Market environment used by both Telegram bots
+        required: true
+        default: test
+        type: choice
+        options:
+          - test
+          - production
+      confirmation:
+        description: Confirm switching and redeploying both bots
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: render-bot-environment-switch
+  cancel-in-progress: false
+
+env:
+  RENDER_API_URL: https://api.render.com/v1
+  TEST_SERVICE_NAME: 0xda-market-test
+  PRODUCTION_SERVICE_NAME: 0xda-market
+  CLIENT_SERVICE_NAME: 0xda-market-client-bot
+  BROKER_SERVICE_NAME: 0xda-market-broker-bot
+
+jobs:
+  switch:
+    if: inputs.confirmation
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      TARGET_ENVIRONMENT: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Switch and verify Telegram bots
+        shell: bash
+        run: bash script/switch_render_bots_environment.sh
