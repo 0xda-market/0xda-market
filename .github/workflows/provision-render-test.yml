@@ -17,6 +17,8 @@ concurrency:
 
 env:
   RENDER_API_URL: https://api.render.com/v1
+  RENDER_PROJECT_NAME: 0xda-market
+  RENDER_TEST_ENVIRONMENT_NAME: Test
   PRODUCTION_SERVICE_NAME: 0xda-market
   TEST_SERVICE_NAME: 0xda-market-test
   SUPABASE_TEST_PROJECT_REF: cyxstycjamjdgvqmglsp
@@ -30,6 +32,8 @@ jobs:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       SUPABASE_TEST_DB_PASSWORD: ${{ secrets.SUPABASE_TEST_DB_PASSWORD }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Validate required secrets
         shell: bash
         run: |
@@ -215,6 +219,10 @@ jobs:
           echo "id=$service_id" >> "$GITHUB_OUTPUT"
           echo "slug=$service_slug" >> "$GITHUB_OUTPUT"
           echo "deploy_id=$deploy_id" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure Render test environment
+        shell: bash
+        run: bash script/ensure_render_test_environment.sh
 
       - name: Wait for deploy and verify health
         env:
