@@ -21,6 +21,9 @@ require_relative "lib/zero_x_da/market/telegram/webhook"
 require_relative "lib/zero_x_da/market/identity/memory_store"
 require_relative "lib/zero_x_da/market/identity/postgres_store"
 require_relative "lib/zero_x_da/market/identity/telegram_auth_service"
+require_relative "lib/zero_x_da/market/catalog/memory_store"
+require_relative "lib/zero_x_da/market/catalog/postgres_store"
+require_relative "lib/zero_x_da/market/catalog/service"
 
 clock = -> { Time.now.utc }
 environment = ENV.fetch("RACK_ENV", "development")
@@ -60,6 +63,12 @@ identity_store = if database
                  else
                    ZeroXDA::Market::Identity::MemoryStore.new
                  end
+catalog_store = if database
+                  ZeroXDA::Market::Catalog::PostgresStore.new(database: database)
+                else
+                  ZeroXDA::Market::Catalog::MemoryStore.new
+                end
+catalog = ZeroXDA::Market::Catalog::Service.new(store: catalog_store)
 
 manual_provider = if operator_token && !operator_token.empty?
                     ZeroXDA::Market::Providers::ManualProvider.new(
@@ -86,7 +95,8 @@ public_api = ZeroXDA::Market::Transport::JSONAPI.new(
   kernel: kernel,
   token: public_token,
   readiness: -> { store.healthy? },
-  identity_service: identity_service
+  identity_service: identity_service,
+  catalog: catalog
 )
 
 applications = { "/" => public_api }
@@ -95,7 +105,8 @@ if manual_provider
   operator_api = ZeroXDA::Market::Transport::ManualAPI.new(
     provider: manual_provider,
     token: operator_token,
-    identity_service: identity_service
+    identity_service: identity_service,
+    catalog: catalog
   )
   applications["/operator"] = operator_api
 end

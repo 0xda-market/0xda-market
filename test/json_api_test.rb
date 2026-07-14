@@ -2,6 +2,9 @@
 
 require_relative "test_helper"
 require "rack/mock"
+require "zero_x_da/market/catalog/memory_store"
+require "zero_x_da/market/catalog/product"
+require "zero_x_da/market/catalog/service"
 require "zero_x_da/market/transport/json_api"
 
 class JSONAPITest < Minitest::Test
@@ -10,9 +13,9 @@ class JSONAPITest < Minitest::Test
   def setup
     clock = MutableClock.new
     @provider = TestProvider.new(clock: clock)
-    kernel, = build_kernel(provider: @provider, clock: clock)
+    @kernel, = build_kernel(provider: @provider, clock: clock)
     @client = Rack::MockRequest.new(
-      ZeroXDA::Market::Transport::JSONAPI.new(kernel: kernel)
+      ZeroXDA::Market::Transport::JSONAPI.new(kernel: @kernel)
     )
   end
 
@@ -54,6 +57,42 @@ class JSONAPITest < Minitest::Test
     document = JSON.parse(response.body)
     assert_equal "ok", document.fetch("status")
     assert_match(/\A\d{4}-\d{2}-\d{2}T/, document.fetch("server_time"))
+  end
+
+  def test_lists_the_active_product_catalog
+    product = ZeroXDA::Market::Catalog::Product.new(
+      sku: "premium_3m",
+      name: "Telegram Premium 3 міс.",
+      button_label: "Premium 3 міс.",
+      metadata: { family: "telegram_premium", duration_months: 3 },
+      position: 1,
+      created_at: Time.utc(2026, 7, 14, 12, 0, 0)
+    )
+    catalog = ZeroXDA::Market::Catalog::Service.new(
+      store: ZeroXDA::Market::Catalog::MemoryStore.new(products: [product])
+    )
+    client = Rack::MockRequest.new(
+      ZeroXDA::Market::Transport::JSONAPI.new(
+        kernel: @kernel,
+        token: "client-secret",
+        catalog: catalog
+      )
+    )
+
+    unauthorized = client.get("/v1/products")
+    response = client.get(
+      "/v1/products",
+      "HTTP_AUTHORIZATION" => "Bearer client-secret"
+    )
+
+    assert_equal 401, unauthorized.status
+    assert_equal 200, response.status
+    document = JSON.parse(response.body)
+    assert_equal 1, document.dig("meta", "count")
+    resource = document.fetch("data").first
+    assert_equal "premium_3m", resource.fetch("id")
+    assert_equal "Premium 3 міс.", resource.dig("attributes", "button_label")
+    assert_equal 3, resource.dig("attributes", "metadata", "duration_months")
   end
 
   def test_health_endpoint_reports_unavailable_when_storage_is_not_ready

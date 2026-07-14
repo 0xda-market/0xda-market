@@ -22,6 +22,7 @@ The repository contains a runnable Rack application with:
 - a durable manual fulfillment workflow;
 - two webhook-based Telegram demo bots for the client and broker roles.
 - provider-independent users with Telegram identity authentication.
+- a database-backed, provider-independent product catalog.
 
 When `DATABASE_URL` is configured, intents, quotes, orders and manual tasks are
 stored in the private PostgreSQL schema `market` and survive deploys and
@@ -80,6 +81,32 @@ curl -sS http://localhost:9292/v1/admin/users/set-admin \
 The target must have authenticated through `/start`. Role assignment is
 transactional and idempotent; the endpoint returns `403` unless the actor has
 the persisted `admin` role.
+
+## Product catalog
+
+`market.products` stores stable SKUs, display labels, ordering and opaque JSON
+metadata. The lifecycle kernel does not interpret product families, amounts,
+currencies or fulfillment semantics.
+
+The initial test catalog contains nine active products:
+
+- Telegram Premium 3, 6 and 9 months;
+- Stars 500, 1000 and 3000;
+- TON, BTC and ETH.
+
+Both bot-facing APIs expose the same ordered catalog:
+
+```sh
+curl -sS http://localhost:9292/v1/products \
+  -H 'authorization: Bearer client-secret'
+
+curl -sS http://localhost:9292/operator/v1/products \
+  -H 'authorization: Bearer operator-secret'
+```
+
+Only active products are returned. Product-specific behavior remains in
+providers and consumers; adding a catalog row never adds knowledge to the
+provider-agnostic kernel.
 
 ## Lifecycle
 

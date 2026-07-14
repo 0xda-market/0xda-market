@@ -9,6 +9,7 @@ require "zero_x_da/market/adapters/postgres_telegram_store"
 require "zero_x_da/market/providers/manual_provider"
 require "zero_x_da/market/identity/postgres_store"
 require "zero_x_da/market/identity/telegram_auth_service"
+require "zero_x_da/market/catalog/postgres_store"
 
 class PostgresPersistenceTest < Minitest::Test
   DATABASE_URL = ENV["TEST_DATABASE_URL"]
@@ -80,7 +81,29 @@ class PostgresPersistenceTest < Minitest::Test
     versions = @database.connection[
       Sequel.qualify(:market, :schema_migrations)
     ].select_map(:version)
-    assert_equal %w[001_initial 002_telegram_demo 003_users_and_identities], versions
+    assert_equal(
+      %w[001_initial 002_telegram_demo 003_users_and_identities 004_products],
+      versions
+    )
+  end
+
+  def test_product_catalog_is_seeded_and_survives_reconnection
+    store = ZeroXDA::Market::Catalog::PostgresStore.new(database: @database)
+
+    assert_equal 9, store.list_products(status: "active").length
+    premium = store.find_product("premium_9m")
+    assert_equal "Telegram Premium 9 міс.", premium.name
+    assert_equal 9, premium.metadata.fetch("duration_months")
+
+    @database.disconnect
+    @database = connect
+    restarted = ZeroXDA::Market::Catalog::PostgresStore.new(database: @database)
+
+    assert_equal %w[
+      premium_3m premium_6m premium_9m
+      stars_500 stars_1000 stars_3000
+      ton btc eth
+    ], restarted.list_products(status: "active").map(&:sku)
   end
 
   def test_telegram_identity_survives_reconnection
