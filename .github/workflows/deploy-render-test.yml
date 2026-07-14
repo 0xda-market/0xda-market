@@ -16,7 +16,7 @@ concurrency:
 
 env:
   RENDER_API_URL: https://api.render.com/v1
-  RENDER_PROJECT_NAME: 0xda
+  RENDER_PROJECT_NAME: 0xda-market
   RENDER_TEST_ENVIRONMENT_NAME: Test
   TEST_SERVICE_NAME: 0xda-market-test
 
