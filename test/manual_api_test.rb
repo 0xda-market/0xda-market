@@ -6,6 +6,9 @@ require "zero_x_da/market/providers/manual_provider"
 require "zero_x_da/market/transport/manual_api"
 require "zero_x_da/market/identity/memory_store"
 require "zero_x_da/market/identity/telegram_auth_service"
+require "zero_x_da/market/catalog/memory_store"
+require "zero_x_da/market/catalog/product"
+require "zero_x_da/market/catalog/service"
 
 class ManualAPITest < Minitest::Test
   include KernelFixture
@@ -21,6 +24,17 @@ class ManualAPITest < Minitest::Test
       clock: @clock,
       capability: "manual.fulfillment"
     )
+    product = ZeroXDA::Market::Catalog::Product.new(
+      sku: "ton",
+      name: "TON",
+      button_label: "TON",
+      metadata: { symbol: "TON" },
+      position: 1,
+      created_at: @clock.call
+    )
+    catalog = ZeroXDA::Market::Catalog::Service.new(
+      store: ZeroXDA::Market::Catalog::MemoryStore.new(products: [product])
+    )
     @client = Rack::MockRequest.new(
       ZeroXDA::Market::Transport::ManualAPI.new(
         provider: @provider,
@@ -29,7 +43,8 @@ class ManualAPITest < Minitest::Test
           store: ZeroXDA::Market::Identity::MemoryStore.new,
           clock: @clock,
           id_generator: SequenceIDs.new
-        )
+        ),
+        catalog: catalog
       )
     )
   end
@@ -62,6 +77,16 @@ class ManualAPITest < Minitest::Test
     completed = @kernel.execute_order(order.id)
     assert_equal "succeeded", completed.status
     assert completed.result.dig("data", "delivered")
+  end
+
+  def test_lists_products_for_the_operator
+    response = authorized_get("/v1/products")
+
+    assert_equal 200, response.status
+    document = JSON.parse(response.body)
+    assert_equal 1, document.dig("meta", "count")
+    assert_equal "ton", document.dig("data", 0, "id")
+    assert_equal "TON", document.dig("data", 0, "attributes", "button_label")
   end
 
   def test_rejects_a_task_with_a_structured_failure

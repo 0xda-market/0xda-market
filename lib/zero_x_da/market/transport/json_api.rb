@@ -16,11 +16,18 @@ module ZeroXDA
           "cache-control" => "no-store"
         }.freeze
 
-        def initialize(kernel:, token: nil, readiness: -> { true }, identity_service: nil)
+        def initialize(
+          kernel:,
+          token: nil,
+          readiness: -> { true },
+          identity_service: nil,
+          catalog: nil
+        )
           @kernel = kernel
           @authentication = token && BearerAuth.new(token: token)
           @readiness = readiness
           @identity_service = identity_service
+          @catalog = catalog
         end
 
         def call(environment)
@@ -90,6 +97,17 @@ module ZeroXDA
             )
             status = authentication.created ? 201 : 200
             return resource_response(status, present_authentication(authentication))
+          end
+
+          if method == "GET" && path == "/v1/products" && @catalog
+            products = @catalog.products
+            return json_response(
+              200,
+              {
+                "data" => products.map { |product| present_product(product) },
+                "meta" => { "count" => products.length }
+              }
+            )
           end
 
           if method == "GET" && path == "/v1/users" && @identity_service
@@ -230,6 +248,20 @@ module ZeroXDA
               "telegram_user_id" => entry.identity.provider_user_id,
               "role" => entry.user.role,
               "status" => entry.user.status
+            }
+          }
+        end
+
+        def present_product(product)
+          {
+            "type" => "product",
+            "id" => product.sku,
+            "attributes" => {
+              "name" => product.name,
+              "button_label" => product.button_label,
+              "metadata" => product.metadata,
+              "status" => product.status,
+              "position" => product.position
             }
           }
         end

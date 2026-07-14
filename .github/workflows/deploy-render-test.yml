@@ -116,6 +116,14 @@ jobs:
           curl --fail --silent --show-error \
             --header "Authorization: Bearer $public_api_token" \
             "$base_url/v1/users?status=active" > /dev/null
+          products_json="$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer $public_api_token" \
+            "$base_url/v1/products")"
+          product_count="$(jq -er '.meta.count' <<<"$products_json")"
+          if [[ "$product_count" != "9" ]]; then
+            echo "Expected 9 active test products; found $product_count." >&2
+            exit 1
+          fi
           curl --fail --silent --show-error \
             --header "Authorization: Bearer $manual_provider_token" \
             "$base_url/operator/v1/tasks?status=pending" > /dev/null
@@ -127,5 +135,5 @@ jobs:
             echo "- URL: $health_url"
             echo "- Deploy: \`$deploy_id\`"
             echo "- Status: \`live\`"
-            echo "- Smoke tests: \`public API + operator API passed\`"
+            echo "- Smoke tests: \`public API + 9-product catalog + operator API passed\`"
           } >> "$GITHUB_STEP_SUMMARY"
