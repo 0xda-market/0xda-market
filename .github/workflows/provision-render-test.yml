@@ -61,17 +61,21 @@ jobs:
           fi
 
           owner_id="$(jq -r '.[0].ownerId' <<<"$matches")"
+          service_id="$(jq -r '.[0].id' <<<"$matches")"
           repo="$(jq -r '.[0].repo' <<<"$matches")"
           test -n "$owner_id" && [[ "$owner_id" != "null" ]]
+          test -n "$service_id" && [[ "$service_id" != "null" ]]
           test -n "$repo" && [[ "$repo" != "null" ]]
 
           echo "owner_id=$owner_id" >> "$GITHUB_OUTPUT"
+          echo "service_id=$service_id" >> "$GITHUB_OUTPUT"
           echo "repo=$repo" >> "$GITHUB_OUTPUT"
 
       - name: Create or update Render test service
         id: service
         env:
           OWNER_ID: ${{ steps.production.outputs.owner_id }}
+          PRODUCTION_SERVICE_ID: ${{ steps.production.outputs.service_id }}
           REPO: ${{ steps.production.outputs.repo }}
         shell: bash
         run: |
@@ -79,6 +83,12 @@ jobs:
 
           encoded_password="$(jq -rn --arg value "$SUPABASE_TEST_DB_PASSWORD" '$value | @uri')"
           database_url="postgresql://postgres.$SUPABASE_TEST_PROJECT_REF:$encoded_password@aws-0-eu-central-1.pooler.supabase.com:5432/postgres?sslmode=require"
+          admin_telegram_ids="$(curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $RENDER_API_KEY" \
+            "$RENDER_API_URL/services/$PRODUCTION_SERVICE_ID/env-vars/ADMIN_TELEGRAM_IDS" \
+            | jq -er '.value')"
+          test -n "$admin_telegram_ids" || { echo "Production ADMIN_TELEGRAM_IDS is missing" >&2; exit 1; }
+          echo "::add-mask::$admin_telegram_ids"
 
           services_json="$(curl --fail-with-body --silent --show-error \
             --header "Authorization: Bearer $RENDER_API_KEY" \
@@ -98,6 +108,7 @@ jobs:
               --arg database_url "$database_url" \
               --arg public_api_token "$public_api_token" \
               --arg manual_provider_token "$manual_provider_token" \
+              --arg admin_telegram_ids "$admin_telegram_ids" \
               '{
                 type: "web_service",
                 name: $name,
@@ -109,7 +120,8 @@ jobs:
                   {key: "RACK_ENV", value: "production"},
                   {key: "DATABASE_URL", value: $database_url},
                   {key: "PUBLIC_API_TOKEN", value: $public_api_token},
-                  {key: "MANUAL_PROVIDER_TOKEN", value: $manual_provider_token}
+                  {key: "MANUAL_PROVIDER_TOKEN", value: $manual_provider_token},
+                  {key: "ADMIN_TELEGRAM_IDS", value: $admin_telegram_ids}
                 ],
                 serviceDetails: {
                   runtime: "docker",
@@ -200,6 +212,7 @@ jobs:
 
             put_env RACK_ENV production
             put_env DATABASE_URL "$database_url"
+            put_env ADMIN_TELEGRAM_IDS "$admin_telegram_ids"
             ensure_generated_env PUBLIC_API_TOKEN
             ensure_generated_env MANUAL_PROVIDER_TOKEN
 
