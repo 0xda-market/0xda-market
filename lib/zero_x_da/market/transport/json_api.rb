@@ -4,6 +4,7 @@ require "json"
 require "rack"
 require "time"
 require_relative "../core/kernel"
+require_relative "../localization/service"
 require_relative "bearer_auth"
 
 module ZeroXDA
@@ -21,13 +22,17 @@ module ZeroXDA
           token: nil,
           readiness: -> { true },
           identity_service: nil,
-          catalog: nil
+          catalog: nil,
+          pricing: nil,
+          localization: nil
         )
           @kernel = kernel
           @authentication = token && BearerAuth.new(token: token)
           @readiness = readiness
           @identity_service = identity_service
           @catalog = catalog
+          @pricing = pricing
+          @localization = localization
         end
 
         def call(environment)
@@ -100,12 +105,58 @@ module ZeroXDA
           end
 
           if method == "GET" && path == "/v1/products" && @catalog
+            currency = requested_currency(request)
             products = @catalog.products
+            prices = @pricing ? @pricing.current_prices : {}
+            data = products.map do |product|
+              resource = present_product(product)
+              price = prices[product.sku]
+              resource["attributes"]["price"] = price && present_localized_price(price, currency)
+              resource
+            end
             return json_response(
               200,
               {
-                "data" => products.map { |product| present_product(product) },
-                "meta" => { "count" => products.length }
+                "data" => data,
+                "meta" => { "count" => products.length, "currency" => currency }
+              }
+            )
+          end
+
+          if method == "GET" && path == "/v1/admin/prices/proposal" && @pricing && @identity_service
+            @identity_service.require_admin(
+              provider_user_id: request.params["actor_telegram_user_id"]
+            )
+            entries = @pricing.proposal
+            return json_response(
+              200,
+              {
+                "data" => entries.map { |entry| present_price_proposal(entry) },
+                "meta" => {
+                  "count" => entries.length,
+                  "base_currency" => Localization::Service::BASE_CURRENCY
+                }
+              }
+            )
+          end
+
+          if method == "POST" && path == "/v1/admin/prices" && @pricing && @identity_service
+            body = request_document(request)
+            actor = body.fetch("actor_telegram_user_id")
+            @identity_service.require_admin(provider_user_id: actor)
+            entries = body.fetch("prices")
+            raise ArgumentError, "prices must be a non-empty array" unless entries.is_a?(Array)
+
+            applied = @pricing.apply_prices(
+              entries,
+              source: "admin",
+              set_by_telegram_user_id: actor.to_s
+            )
+            return json_response(
+              201,
+              {
+                "data" => applied.map { |price| present_price(price) },
+                "meta" => { "count" => applied.length }
               }
             )
           end
@@ -205,6 +256,18 @@ module ZeroXDA
           request_document(request)
         end
 
+        # The requested display currency. Falls back to the base currency when
+        # the parameter is absent or localization is not wired.
+        def requested_currency(request)
+          value = request.params["currency"].to_s.strip.upcase
+          return Localization::Service::BASE_CURRENCY if value.empty? || @localization.nil?
+          unless @localization.supported_currency?(value)
+            raise ArgumentError, "currency is not supported: #{value}"
+          end
+
+          value
+        end
+
         def present_intent(intent)
           {
             "type" => "intent",
@@ -262,6 +325,53 @@ module ZeroXDA
               "metadata" => product.metadata,
               "status" => product.status,
               "position" => product.position
+            }
+          }
+        end
+
+        def present_localized_price(price, currency)
+          amount = if @localization
+                     @localization.convert(amount_usdt: price.amount_usdt, currency: currency)
+                   else
+                     price.amount_usdt
+                   end
+          {
+            "amount" => decimal_string(amount),
+            "currency" => currency,
+            "amount_usdt" => decimal_string(price.amount_usdt),
+            "source" => price.source,
+            "applied_at" => timestamp(price.created_at)
+          }
+        end
+
+        def present_price(price)
+          {
+            "type" => "price",
+            "id" => price.sku,
+            "attributes" => {
+              "sku" => price.sku,
+              "amount_usdt" => decimal_string(price.amount_usdt),
+              "source" => price.source,
+              "set_by_telegram_user_id" => price.set_by_telegram_user_id,
+              "applied_at" => timestamp(price.created_at)
+            }
+          }
+        end
+
+        def present_price_proposal(entry)
+          product = entry.fetch(:product)
+          current = entry[:current]
+          previous = entry[:previous]
+          {
+            "type" => "price_proposal",
+            "id" => product.sku,
+            "attributes" => {
+              "name" => product.name,
+              "button_label" => product.button_label,
+              "position" => product.position,
+              "current_amount_usdt" => current && decimal_string(current.amount_usdt),
+              "current_applied_at" => current && timestamp(current.created_at),
+              "previous_amount_usdt" => previous && decimal_string(previous.amount_usdt)
             }
           }
         end
@@ -343,6 +453,10 @@ module ZeroXDA
               "updated_at" => timestamp(order.updated_at)
             }
           }
+        end
+
+        def decimal_string(value)
+          value.to_s("F")
         end
 
         def timestamp(value)

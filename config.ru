@@ -24,6 +24,12 @@ require_relative "lib/zero_x_da/market/identity/telegram_auth_service"
 require_relative "lib/zero_x_da/market/catalog/memory_store"
 require_relative "lib/zero_x_da/market/catalog/postgres_store"
 require_relative "lib/zero_x_da/market/catalog/service"
+require_relative "lib/zero_x_da/market/pricing/memory_store"
+require_relative "lib/zero_x_da/market/pricing/postgres_store"
+require_relative "lib/zero_x_da/market/pricing/service"
+require_relative "lib/zero_x_da/market/localization/memory_store"
+require_relative "lib/zero_x_da/market/localization/postgres_store"
+require_relative "lib/zero_x_da/market/localization/service"
 
 clock = -> { Time.now.utc }
 environment = ENV.fetch("RACK_ENV", "development")
@@ -70,6 +76,24 @@ catalog_store = if database
                 end
 catalog = ZeroXDA::Market::Catalog::Service.new(store: catalog_store)
 
+pricing_store = if database
+                  ZeroXDA::Market::Pricing::PostgresStore.new(database: database)
+                else
+                  ZeroXDA::Market::Pricing::MemoryStore.new
+                end
+pricing = ZeroXDA::Market::Pricing::Service.new(
+  store: pricing_store,
+  catalog: catalog,
+  clock: clock
+)
+
+fx_store = if database
+             ZeroXDA::Market::Localization::PostgresStore.new(database: database)
+           else
+             ZeroXDA::Market::Localization::MemoryStore.new(clock: clock)
+           end
+localization = ZeroXDA::Market::Localization::Service.new(fx_store: fx_store)
+
 manual_provider = if operator_token && !operator_token.empty?
                     ZeroXDA::Market::Providers::ManualProvider.new(
                       key: "manual.default",
@@ -96,7 +120,9 @@ public_api = ZeroXDA::Market::Transport::JSONAPI.new(
   token: public_token,
   readiness: -> { store.healthy? },
   identity_service: identity_service,
-  catalog: catalog
+  catalog: catalog,
+  pricing: pricing,
+  localization: localization
 )
 
 applications = { "/" => public_api }
