@@ -82,7 +82,7 @@ class PostgresPersistenceTest < Minitest::Test
       Sequel.qualify(:market, :schema_migrations)
     ].select_map(:version)
     assert_equal(
-      %w[001_initial 002_telegram_demo 003_users_and_identities 004_products],
+      %w[001_initial 002_telegram_demo 003_users_and_identities 004_products 005_pricing],
       versions
     )
   end
