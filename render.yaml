@@ -1,22 +1,51 @@
-services:
-  - type: web
-    name: 0xda-market
-    runtime: docker
-    plan: free
-    region: frankfurt
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    healthCheckPath: /health
-    autoDeployTrigger: checksPass
-    maxShutdownDelaySeconds: 30
-    envVars:
-      - key: RACK_ENV
-        value: production
-      - key: PUBLIC_API_TOKEN
-        sync: false
-      - key: MANUAL_PROVIDER_TOKEN
-        sync: false
-      - key: DATABASE_URL
-        sync: false
-      - key: ADMIN_TELEGRAM_IDS
-        sync: false
+projects:
+  - name: 0xda-market
+    environments:
+      - name: Test
+        services:
+          - type: web
+            name: 0xda-market-test
+            runtime: docker
+            plan: free
+            region: frankfurt
+            branch: master
+            dockerfilePath: ./Dockerfile
+            dockerContext: .
+            healthCheckPath: /health
+            autoDeployTrigger: checksPass
+            maxShutdownDelaySeconds: 30
+            envVars:
+              - key: RACK_ENV
+                value: production
+              - key: PUBLIC_API_TOKEN
+                sync: false
+              - key: MANUAL_PROVIDER_TOKEN
+                sync: false
+              - key: DATABASE_URL
+                sync: false
+              - key: ADMIN_TELEGRAM_IDS
+                sync: false
+      - name: Prod
+        services:
+          - type: web
+            name: 0xda-market
+            runtime: docker
+            plan: free
+            region: frankfurt
+            branch: release
+            dockerfilePath: ./Dockerfile
+            dockerContext: .
+            healthCheckPath: /health
+            autoDeployTrigger: checksPass
+            maxShutdownDelaySeconds: 30
+            envVars:
+              - key: RACK_ENV
+                value: production
+              - key: PUBLIC_API_TOKEN
+                sync: false
+              - key: MANUAL_PROVIDER_TOKEN
+                sync: false
+              - key: DATABASE_URL
+                sync: false
+              - key: ADMIN_TELEGRAM_IDS
+                sync: false
