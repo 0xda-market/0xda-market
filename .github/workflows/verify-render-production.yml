@@ -1,0 +1,184 @@
+name: Verify Render production service
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: render-production-verification
+  cancel-in-progress: false
+
+env:
+  RENDER_API_URL: https://api.render.com/v1
+  PRODUCTION_SERVICE_NAME: 0xda-market
+
+jobs:
+  verify:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Verify exact production deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RENDER_API_KEY" || { echo "RENDER_API_KEY is missing" >&2; exit 1; }
+
+          services_json="$(curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $RENDER_API_KEY" \
+            --header "Accept: application/json" \
+            "$RENDER_API_URL/services?name=$PRODUCTION_SERVICE_NAME&limit=20")"
+          matches="$(jq --arg name "$PRODUCTION_SERVICE_NAME" \
+            '[.[] | .service | select(.name == $name)]' <<<"$services_json")"
+          match_count="$(jq 'length' <<<"$matches")"
+
+          if [[ "$match_count" != "1" ]]; then
+            echo "Expected one Render service named '$PRODUCTION_SERVICE_NAME'; found $match_count." >&2
+            exit 1
+          fi
+
+          service_id="$(jq -r '.[0].id' <<<"$matches")"
+          service_slug="$(jq -r '.[0].slug' <<<"$matches")"
+          deploy_id=""
+
+          # Render's checksPass deployment is asynchronous. Wait until the
+          # exact release commit appears instead of accepting whichever deploy
+          # happens to be newest for the service.
+          for _ in {1..36}; do
+            deploys_json="$(curl --fail-with-body --silent --show-error \
+              --header "Authorization: Bearer $RENDER_API_KEY" \
+              "$RENDER_API_URL/services/$service_id/deploys?limit=20")"
+            deploy_id="$(jq -r --arg commit_id "$COMMIT_SHA" '
+              [.[] | .deploy | select(.commit.id? == $commit_id)]
+              | first
+              | .id // empty
+            ' <<<"$deploys_json")"
+            [[ -n "$deploy_id" ]] && break
+            sleep 5
+          done
+
+          if [[ -z "$deploy_id" ]]; then
+            echo "Unable to find a Render production deploy for commit $COMMIT_SHA." >&2
+            exit 1
+          fi
+
+          echo "Resolved Render production deploy: $deploy_id"
+
+          print_deploy_diagnostics() {
+            local events_json
+            local diagnostics
+
+            if ! events_json="$(curl --fail-with-body --silent --show-error \
+              --header "Authorization: Bearer $RENDER_API_KEY" \
+              "$RENDER_API_URL/services/$service_id/events?limit=50")"; then
+              echo "Unable to retrieve Render deploy diagnostics." >&2
+              return
+            fi
+
+            diagnostics="$(jq --arg deploy_id "$deploy_id" '
+              [
+                .[] | .event
+                | select(.details.deployId? == $deploy_id)
+                | {
+                    timestamp,
+                    type,
+                    deploy_status: .details.deployStatus?,
+                    reason: .details.reason?
+                  }
+              ]
+            ' <<<"$events_json")"
+
+            echo "::group::Render production deploy diagnostics"
+            echo "$diagnostics"
+            echo "::endgroup::"
+          }
+
+          deploy_status=""
+          for _ in {1..90}; do
+            deploy_json="$(curl --fail-with-body --silent --show-error \
+              --header "Authorization: Bearer $RENDER_API_KEY" \
+              "$RENDER_API_URL/services/$service_id/deploys/$deploy_id")"
+            deploy_status="$(jq -r '.status' <<<"$deploy_json")"
+            case "$deploy_status" in
+              live) break ;;
+              build_failed|update_failed|pre_deploy_failed|canceled|deactivated)
+                echo "Render production deploy failed with status: $deploy_status" >&2
+                print_deploy_diagnostics
+                exit 1
+                ;;
+            esac
+            sleep 10
+          done
+
+          if [[ "$deploy_status" != "live" ]]; then
+            echo "Timed out waiting for Render production deploy; last status: $deploy_status" >&2
+            print_deploy_diagnostics
+            exit 1
+          fi
+
+          health_url="https://$service_slug.onrender.com/health"
+          curl --fail --silent --show-error \
+            --retry 12 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            "$health_url" > /dev/null
+
+          public_api_token="$(curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $RENDER_API_KEY" \
+            "$RENDER_API_URL/services/$service_id/env-vars/PUBLIC_API_TOKEN" \
+            | jq -er '.value')"
+          manual_provider_token="$(curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $RENDER_API_KEY" \
+            "$RENDER_API_URL/services/$service_id/env-vars/MANUAL_PROVIDER_TOKEN" \
+            | jq -er '.value')"
+          echo "::add-mask::$public_api_token"
+          echo "::add-mask::$manual_provider_token"
+
+          base_url="https://$service_slug.onrender.com"
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer $public_api_token" \
+            "$base_url/v1/users?status=active" > /dev/null
+          products_json="$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer $public_api_token" \
+            "$base_url/v1/products?locale=en_US")"
+          product_count="$(jq -er '.meta.count' <<<"$products_json")"
+          if [[ "$product_count" != "9" ]]; then
+            echo "Expected 9 active production products; found $product_count." >&2
+            exit 1
+          fi
+          jq -e '
+            ([.data[].id] | index("premium_12m")) != null and
+            ([.data[].id] | index("premium_9m")) == null
+          ' <<<"$products_json" > /dev/null
+          ukrainian_products_json="$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer $public_api_token" \
+            "$base_url/v1/products?locale=uk_UA")"
+          jq -e '
+            .meta.count == 9 and
+            .meta.locale == "uk_UA" and
+            ([.data[].attributes.locale] | all(. == "uk_UA"))
+          ' <<<"$ukrainian_products_json" > /dev/null
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer $manual_provider_token" \
+            "$base_url/operator/v1/tasks?status=pending" > /dev/null
+
+          {
+            echo "## Render production verification"
+            echo
+            echo "- Commit: \`$COMMIT_SHA\`"
+            echo "- URL: $health_url"
+            echo "- Deploy: \`$deploy_id\`"
+            echo "- Status: \`live\`"
+            echo "- Smoke tests: \`health + public API + en_US/uk_UA catalog + operator API passed\`"
+          } >> "$GITHUB_STEP_SUMMARY"
