@@ -216,13 +216,42 @@ jobs:
             ensure_generated_env PUBLIC_API_TOKEN
             ensure_generated_env MANUAL_PROVIDER_TOKEN
 
+            existing_deploy_ids="$(curl --fail-with-body --silent --show-error \
+              --header "Authorization: Bearer $RENDER_API_KEY" \
+              "$RENDER_API_URL/services/$service_id/deploys?limit=20" \
+              | jq '[.[].deploy.id]')"
             deploy_response="$(curl --fail-with-body --silent --show-error \
               --request POST \
               --header "Authorization: Bearer $RENDER_API_KEY" \
               --header "Content-Type: application/json" \
               --data '{"clearCache":"do_not_clear"}' \
               "$RENDER_API_URL/services/$service_id/deploys")"
-            deploy_id="$(jq -er '.id' <<<"$deploy_response")"
+            deploy_id="$(jq -r '.id // empty' <<<"$deploy_response")"
+
+            if [[ -z "$deploy_id" ]]; then
+              echo "Render queued the deploy without an ID; resolving the new deploy."
+              for _ in {1..12}; do
+                deploys_json="$(curl --fail-with-body --silent --show-error \
+                  --header "Authorization: Bearer $RENDER_API_KEY" \
+                  "$RENDER_API_URL/services/$service_id/deploys?limit=20")"
+                deploy_id="$(jq -r --argjson existing "$existing_deploy_ids" '
+                  [
+                    .[] | .deploy
+                    | . as $deploy
+                    | select(($existing | index($deploy.id)) == null)
+                  ]
+                  | first
+                  | .id // empty
+                ' <<<"$deploys_json")"
+                [[ -n "$deploy_id" ]] && break
+                sleep 5
+              done
+            fi
+
+            if [[ -z "$deploy_id" ]]; then
+              echo "Unable to resolve the queued Render deploy." >&2
+              exit 1
+            fi
             echo "Updated Render service '$TEST_SERVICE_NAME': $service_id"
           else
             echo "Expected at most one Render service named '$TEST_SERVICE_NAME'; found $match_count." >&2

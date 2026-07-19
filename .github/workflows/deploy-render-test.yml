@@ -71,7 +71,42 @@ jobs:
             --header "Content-Type: application/json" \
             --data "$request_body" \
             "$RENDER_API_URL/services/$service_id/deploys")"
-          deploy_id="$(jq -er '.id' <<<"$deploy_json")"
+          deploy_id="$(jq -r '.id // empty' <<<"$deploy_json")"
+
+          # Render can respond with HTTP 202 and an empty body when the deploy
+          # is queued. Resolve the newly queued deploy by its exact commit
+          # instead of assuming every successful response contains an ID.
+          if [[ -z "$deploy_id" ]]; then
+            echo "Render queued the deploy without an ID; resolving commit $COMMIT_SHA."
+            for _ in {1..12}; do
+              deploys_json="$(curl --fail-with-body --silent --show-error \
+                --header "Authorization: Bearer $RENDER_API_KEY" \
+                "$RENDER_API_URL/services/$service_id/deploys?limit=20")"
+              deploy_id="$(jq -r --arg commit_id "$COMMIT_SHA" '
+                [
+                  .[] | .deploy
+                  | select(.commit.id? == $commit_id)
+                  | . as $deploy
+                  | select([
+                      "build_failed",
+                      "update_failed",
+                      "pre_deploy_failed",
+                      "canceled",
+                      "deactivated"
+                    ] | index($deploy.status) | not)
+                ]
+                | first
+                | .id // empty
+              ' <<<"$deploys_json")"
+              [[ -n "$deploy_id" ]] && break
+              sleep 5
+            done
+          fi
+
+          if [[ -z "$deploy_id" ]]; then
+            echo "Unable to resolve the Render deploy for commit $COMMIT_SHA." >&2
+            exit 1
+          fi
 
           deploy_status=""
           for _ in {1..90}; do
