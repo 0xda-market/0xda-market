@@ -85,7 +85,7 @@ class PostgresPersistenceTest < Minitest::Test
       %w[
         001_initial 002_telegram_demo 003_users_and_identities
         004_products 005_pricing 006_replace_premium_9m_with_12m
-        007_product_catalog_localizations
+        007_product_catalog_localizations 008_legacy_catalog_rollback_window
       ],
       versions
     )
@@ -106,6 +106,13 @@ class PostgresPersistenceTest < Minitest::Test
     assert_equal "Telegram Premium 12 міс.", ukrainian.name
     assert_equal "Premium 12 міс.", ukrainian.button_label
     assert_equal "uk_UA", ukrainian.locale
+
+    legacy = @database.connection[Sequel.qualify(:market, :products)]
+      .where(sku: "premium_12m")
+      .select(:name, :button_label)
+      .first
+    assert_equal "Telegram Premium 12 міс.", legacy.fetch(:name)
+    assert_equal "Premium 12 міс.", legacy.fetch(:button_label)
 
     @database.disconnect
     @database = connect

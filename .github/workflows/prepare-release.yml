@@ -1,0 +1,141 @@
+name: Prepare GitHub release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Semantic version tag matching VERSION (for example v0.1.0)
+        required: true
+        type: string
+  push:
+    branches:
+      - "release-request/v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: prepare-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/zero_x_da_test
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: zero_x_da_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d zero_x_da_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out the production branch
+        uses: actions/checkout@v4
+        with:
+          ref: release
+          fetch-depth: 0
+
+      - name: Validate release metadata
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_TAG: ${{ inputs.tag }}
+          TRIGGER_REF: ${{ github.ref_name }}
+          TRIGGER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${EVENT_NAME}" == "push" ]]; then
+            prefix="release-request/"
+            if [[ "${TRIGGER_REF}" != "${prefix}"v* ]]; then
+              echo "unexpected release request branch: ${TRIGGER_REF}" >&2
+              exit 1
+            fi
+            release_tag="${TRIGGER_REF#${prefix}}"
+          else
+            release_tag="${MANUAL_TAG}"
+          fi
+
+          version="$(tr -d '[:space:]' < VERSION)"
+          expected_tag="v${version}"
+          if [[ ! "${release_tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "tag must be a stable SemVer tag such as v0.1.0" >&2
+            exit 1
+          fi
+          if [[ "${release_tag}" != "${expected_tag}" ]]; then
+            echo "tag ${release_tag} does not match VERSION (${expected_tag})" >&2
+            exit 1
+          fi
+
+          notes_file="docs/releases/${release_tag}.md"
+          test -f "${notes_file}"
+          grep -Fq "## [${version}]" CHANGELOG.md
+
+          git fetch origin --tags --force
+          release_commit="$(git rev-parse HEAD)"
+          if [[ "${EVENT_NAME}" == "push" && "${TRIGGER_SHA}" != "${release_commit}" ]]; then
+            echo "release request must point to release HEAD ${release_commit}" >&2
+            exit 1
+          fi
+
+          tag_exists=false
+          if git rev-parse --verify --quiet "refs/tags/${release_tag}^{commit}" >/dev/null; then
+            tagged_commit="$(git rev-parse "refs/tags/${release_tag}^{commit}")"
+            if [[ "${tagged_commit}" != "${release_commit}" ]]; then
+              echo "${release_tag} already points to ${tagged_commit}, not release HEAD ${release_commit}" >&2
+              exit 1
+            fi
+            tag_exists=true
+          fi
+
+          echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "notes_file=${notes_file}" >> "${GITHUB_OUTPUT}"
+          echo "tag_exists=${tag_exists}" >> "${GITHUB_OUTPUT}"
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3.11"
+          bundler-cache: true
+
+      - name: Run test suite
+        run: bundle exec rake
+
+      - name: Build production image
+        run: docker build --tag 0xda-market:${{ steps.release.outputs.tag }} .
+
+      - name: Create annotated tag
+        if: steps.release.outputs.tag_exists != 'true'
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag --annotate "${RELEASE_TAG}" --message "0xda Market ${RELEASE_TAG}"
+          git push origin "refs/tags/${RELEASE_TAG}"
+
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          NOTES_FILE: ${{ steps.release.outputs.notes_file }}
+        run: |
+          set -euo pipefail
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "GitHub release ${RELEASE_TAG} already exists"
+            exit 0
+          fi
+          gh release create "${RELEASE_TAG}" \
+            --draft \
+            --verify-tag \
+            --title "0xda Market ${RELEASE_TAG}" \
+            --notes-file "${NOTES_FILE}"

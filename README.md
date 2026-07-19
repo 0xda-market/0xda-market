@@ -185,6 +185,12 @@ Production boot requires the two API tokens and `DATABASE_URL`. Telegram bot
 tokens are optional and belong in dedicated bot services. Do not reuse the same
 value for consumer and operator access.
 
+## Versioning and releases
+
+Stable releases use Semantic Versioning tags such as `v0.1.0`. Notable changes
+are curated in [CHANGELOG.md](CHANGELOG.md); the promotion, tag, draft-release
+and rollback procedure is documented in [RELEASING.md](RELEASING.md).
+
 ## Telegram demo bots
 
 The public product name shown in both bots is `zeroxda-market`:
