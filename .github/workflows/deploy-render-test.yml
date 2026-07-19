@@ -108,6 +108,37 @@ jobs:
             exit 1
           fi
 
+          echo "Resolved Render deploy: $deploy_id"
+
+          print_deploy_diagnostics() {
+            local events_json
+            local diagnostics
+
+            if ! events_json="$(curl --fail-with-body --silent --show-error \
+              --header "Authorization: Bearer $RENDER_API_KEY" \
+              "$RENDER_API_URL/services/$service_id/events?limit=50")"; then
+              echo "Unable to retrieve Render deploy diagnostics." >&2
+              return
+            fi
+
+            diagnostics="$(jq --arg deploy_id "$deploy_id" '
+              [
+                .[] | .event
+                | select(.details.deployId? == $deploy_id)
+                | {
+                    timestamp,
+                    type,
+                    deploy_status: .details.deployStatus?,
+                    reason: .details.reason?
+                  }
+              ]
+            ' <<<"$events_json")"
+
+            echo "::group::Render deploy diagnostics"
+            echo "$diagnostics"
+            echo "::endgroup::"
+          }
+
           deploy_status=""
           for _ in {1..90}; do
             deploy_json="$(curl --fail-with-body --silent --show-error \
@@ -118,6 +149,7 @@ jobs:
               live) break ;;
               build_failed|update_failed|pre_deploy_failed|canceled|deactivated)
                 echo "Render deploy failed with status: $deploy_status" >&2
+                print_deploy_diagnostics
                 exit 1
                 ;;
             esac
@@ -126,6 +158,7 @@ jobs:
 
           if [[ "$deploy_status" != "live" ]]; then
             echo "Timed out waiting for Render deploy; last status: $deploy_status" >&2
+            print_deploy_diagnostics
             exit 1
           fi
 
