@@ -8,7 +8,11 @@ module ZeroXDA
     module Localization
       class Service
         BASE_CURRENCY = "USDT"
-        DEFAULT_LANGUAGE = "en"
+        DEFAULT_LOCALE = "en_US"
+        LANGUAGE_LOCALES = {
+          "en" => "en_US",
+          "uk" => "uk_UA"
+        }.freeze
         DISPLAY_SCALE = 2
 
         def initialize(fx_store:)
@@ -20,9 +24,14 @@ module ZeroXDA
         # a flow.
         def resolve(language_code: nil, currency: nil)
           Locale.new(
-            language: normalize_language(language_code),
+            code: locale_for(language_code),
             currency: normalize_currency(currency)
           )
+        end
+
+        def locale_for(language_code)
+          base = language_code.to_s.downcase[/\A[a-z]{2}/]
+          LANGUAGE_LOCALES.fetch(base, DEFAULT_LOCALE)
         end
 
         def convert(amount_usdt:, currency:)
@@ -46,11 +55,6 @@ module ZeroXDA
         end
 
         private
-
-        def normalize_language(code)
-          base = code.to_s.downcase[/\A[a-z]{2}/]
-          Locale::LANGUAGES.include?(base) ? base : DEFAULT_LANGUAGE
-        end
 
         def normalize_currency(currency)
           value = currency.to_s.strip.upcase

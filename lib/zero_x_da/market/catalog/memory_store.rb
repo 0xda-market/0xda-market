@@ -12,7 +12,7 @@ module ZeroXDA
           @monitor = Monitor.new
         end
 
-        def list_products(status:)
+        def list_products(status:, locale: "en_US")
           @monitor.synchronize do
             @products.values
                      .select { |product| product.status == status }
@@ -20,7 +20,7 @@ module ZeroXDA
           end
         end
 
-        def find_product(sku)
+        def find_product(sku, locale: "en_US")
           @monitor.synchronize { @products[sku.to_s] }
         end
       end

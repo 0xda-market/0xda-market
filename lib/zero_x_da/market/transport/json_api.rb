@@ -106,7 +106,8 @@ module ZeroXDA
 
           if method == "GET" && path == "/v1/products" && @catalog
             currency = requested_currency(request)
-            products = @catalog.products
+            locale = requested_locale(request)
+            products = @catalog.products(locale: locale)
             prices = @pricing ? @pricing.current_prices : {}
             data = products.map do |product|
               resource = present_product(product)
@@ -118,7 +119,11 @@ module ZeroXDA
               200,
               {
                 "data" => data,
-                "meta" => { "count" => products.length, "currency" => currency }
+                "meta" => {
+                  "count" => products.length,
+                  "currency" => currency,
+                  "locale" => locale
+                }
               }
             )
           end
@@ -127,14 +132,16 @@ module ZeroXDA
             @identity_service.require_admin(
               provider_user_id: request.params["actor_telegram_user_id"]
             )
-            entries = @pricing.proposal
+            locale = requested_locale(request)
+            entries = @pricing.proposal(locale: locale)
             return json_response(
               200,
               {
                 "data" => entries.map { |entry| present_price_proposal(entry) },
                 "meta" => {
                   "count" => entries.length,
-                  "base_currency" => Localization::Service::BASE_CURRENCY
+                  "base_currency" => Localization::Service::BASE_CURRENCY,
+                  "locale" => locale
                 }
               }
             )
@@ -143,14 +150,14 @@ module ZeroXDA
           if method == "POST" && path == "/v1/admin/prices" && @pricing && @identity_service
             body = request_document(request)
             actor = body.fetch("actor_telegram_user_id")
-            @identity_service.require_admin(provider_user_id: actor)
+            actor_user = @identity_service.require_admin(provider_user_id: actor)
             entries = body.fetch("prices")
             raise ArgumentError, "prices must be a non-empty array" unless entries.is_a?(Array)
 
             applied = @pricing.apply_prices(
               entries,
               source: "admin",
-              set_by_telegram_user_id: actor.to_s
+              set_by_user_id: actor_user.id
             )
             return json_response(
               201,
@@ -268,6 +275,13 @@ module ZeroXDA
           value
         end
 
+        def requested_locale(request)
+          value = request.params["locale"] || request.params["language_code"]
+          return Localization::Service::DEFAULT_LOCALE unless @localization
+
+          @localization.locale_for(value)
+        end
+
         def present_intent(intent)
           {
             "type" => "intent",
@@ -310,7 +324,14 @@ module ZeroXDA
             "attributes" => {
               "telegram_user_id" => entry.identity.provider_user_id,
               "role" => entry.user.role,
-              "status" => entry.user.status
+              "status" => entry.user.status,
+              "locale" => if @localization
+                              @localization.locale_for(
+                                entry.identity.provider_data["language_code"]
+                              )
+                            else
+                              Localization::Service::DEFAULT_LOCALE
+                            end
             }
           }
         end
@@ -321,10 +342,15 @@ module ZeroXDA
             "id" => product.sku,
             "attributes" => {
               "name" => product.name,
+              "short_name" => product.short_name,
               "button_label" => product.button_label,
+              "locale" => product.locale,
               "metadata" => product.metadata,
               "status" => product.status,
-              "position" => product.position
+              "position" => product.position,
+              "updated_by_user_id" => product.updated_by_user_id,
+              "price_updated_by_user_id" => product.price_updated_by_user_id,
+              "price_updated_at" => timestamp(product.price_updated_at)
             }
           }
         end
@@ -340,6 +366,7 @@ module ZeroXDA
             "currency" => currency,
             "amount_usdt" => decimal_string(price.amount_usdt),
             "source" => price.source,
+            "edited_by_user_id" => price.set_by_user_id,
             "applied_at" => timestamp(price.created_at)
           }
         end
@@ -352,7 +379,7 @@ module ZeroXDA
               "sku" => price.sku,
               "amount_usdt" => decimal_string(price.amount_usdt),
               "source" => price.source,
-              "set_by_telegram_user_id" => price.set_by_telegram_user_id,
+              "edited_by_user_id" => price.set_by_user_id,
               "applied_at" => timestamp(price.created_at)
             }
           }
@@ -367,10 +394,13 @@ module ZeroXDA
             "id" => product.sku,
             "attributes" => {
               "name" => product.name,
+              "short_name" => product.short_name,
               "button_label" => product.button_label,
+              "locale" => product.locale,
               "position" => product.position,
               "current_amount_usdt" => current && decimal_string(current.amount_usdt),
               "current_applied_at" => current && timestamp(current.created_at),
+              "current_edited_by_user_id" => current&.set_by_user_id,
               "previous_amount_usdt" => previous && decimal_string(previous.amount_usdt)
             }
           }

@@ -13,7 +13,7 @@ module ZeroXDA
         attr_reader :sku,
                     :amount_usdt,
                     :source,
-                    :set_by_telegram_user_id,
+                    :set_by_user_id,
                     :created_at
 
         def initialize(
@@ -21,16 +21,16 @@ module ZeroXDA
           amount_usdt:,
           source:,
           created_at:,
-          set_by_telegram_user_id: nil
+          set_by_user_id: nil
         )
           @sku = non_empty_string(sku, field: "sku")
           @amount_usdt = decimal(amount_usdt)
           raise ArgumentError, "price source is invalid" unless SOURCES.include?(source)
 
           @source = source.dup.freeze
-          @set_by_telegram_user_id = optional_string(
-            set_by_telegram_user_id,
-            field: "set_by_telegram_user_id"
+          @set_by_user_id = optional_string(
+            set_by_user_id,
+            field: "set_by_user_id"
           )
           @created_at = Core::RecordSupport.time(created_at, field: "created_at")
           freeze

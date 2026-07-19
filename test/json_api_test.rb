@@ -5,6 +5,10 @@ require "rack/mock"
 require "zero_x_da/market/catalog/memory_store"
 require "zero_x_da/market/catalog/product"
 require "zero_x_da/market/catalog/service"
+require "zero_x_da/market/identity/memory_store"
+require "zero_x_da/market/identity/telegram_auth_service"
+require "zero_x_da/market/pricing/memory_store"
+require "zero_x_da/market/pricing/service"
 require "zero_x_da/market/transport/json_api"
 
 class JSONAPITest < Minitest::Test
@@ -91,8 +95,57 @@ class JSONAPITest < Minitest::Test
     assert_equal 1, document.dig("meta", "count")
     resource = document.fetch("data").first
     assert_equal "premium_3m", resource.fetch("id")
+    assert_equal "Premium 3 міс.", resource.dig("attributes", "short_name")
     assert_equal "Premium 3 міс.", resource.dig("attributes", "button_label")
+    assert_equal "en_US", resource.dig("attributes", "locale")
     assert_equal 3, resource.dig("attributes", "metadata", "duration_months")
+  end
+
+  def test_price_application_records_the_internal_admin_user_id
+    clock = MutableClock.new
+    identity_service = ZeroXDA::Market::Identity::TelegramAuthService.new(
+      store: ZeroXDA::Market::Identity::MemoryStore.new,
+      clock: clock,
+      id_generator: SequenceIDs.new,
+      bootstrap_admin_ids: [99]
+    )
+    admin = identity_service.authenticate(provider_user_id: 99)
+    product = ZeroXDA::Market::Catalog::Product.new(
+      sku: "premium_3m",
+      short_name: "Premium 3m",
+      name: "Telegram Premium 3 months",
+      button_label: "Premium 3m",
+      position: 1,
+      created_at: clock.call
+    )
+    catalog = ZeroXDA::Market::Catalog::Service.new(
+      store: ZeroXDA::Market::Catalog::MemoryStore.new(products: [product])
+    )
+    pricing = ZeroXDA::Market::Pricing::Service.new(
+      store: ZeroXDA::Market::Pricing::MemoryStore.new,
+      catalog: catalog,
+      clock: clock
+    )
+    client = Rack::MockRequest.new(
+      ZeroXDA::Market::Transport::JSONAPI.new(
+        kernel: @kernel,
+        identity_service: identity_service,
+        catalog: catalog,
+        pricing: pricing
+      )
+    )
+
+    response = post_json_with(
+      client,
+      "/v1/admin/prices",
+      actor_telegram_user_id: 99,
+      prices: [{ sku: "premium_3m", amount_usdt: "12.50" }]
+    )
+
+    assert_equal 201, response.status, response.body
+    attributes = JSON.parse(response.body).dig("data", 0, "attributes")
+    assert_equal admin.user.id, attributes.fetch("edited_by_user_id")
+    assert_equal admin.user.id, pricing.current_price("premium_3m").set_by_user_id
   end
 
   def test_health_endpoint_reports_unavailable_when_storage_is_not_ready

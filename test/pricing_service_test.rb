@@ -17,11 +17,11 @@ module ZeroXDA
             @skus = skus
           end
 
-          def products
+          def products(locale: "en_US")
             @skus.map { |sku| FakeProduct.new(sku: sku) }
           end
 
-          def find_product(sku)
+          def find_product(sku, locale: "en_US")
             unless @skus.include?(sku.to_s)
               raise Core::NotFound.new("product", sku)
             end
@@ -43,12 +43,12 @@ module ZeroXDA
           @service.apply_price(
             sku: "premium_3m",
             amount_usdt: "12.50",
-            set_by_telegram_user_id: "42"
+            set_by_user_id: "user-42"
           )
           price = @service.current_price("premium_3m")
           assert_equal BigDecimal("12.5"), price.amount_usdt
           assert_equal "admin", price.source
-          assert_equal "42", price.set_by_telegram_user_id
+          assert_equal "user-42", price.set_by_user_id
         end
 
         def test_latest_application_wins

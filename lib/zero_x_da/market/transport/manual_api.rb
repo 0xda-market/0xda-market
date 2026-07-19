@@ -61,12 +61,17 @@ module ZeroXDA
           end
 
           if method == "GET" && path == "/v1/products" && @catalog
-            products = @catalog.products
+            locale = request.params["locale"].to_s
+            locale = "en_US" if locale.empty?
+            products = @catalog.products(locale: locale)
             return json_response(
               200,
               {
                 "data" => products.map { |product| present_product(product) },
-                "meta" => { "count" => products.length }
+                "meta" => {
+                  "count" => products.length,
+                  "locale" => products.first&.locale || "en_US"
+                }
               }
             )
           end
@@ -185,7 +190,9 @@ module ZeroXDA
             "id" => product.sku,
             "attributes" => {
               "name" => product.name,
+              "short_name" => product.short_name,
               "button_label" => product.button_label,
+              "locale" => product.locale,
               "metadata" => product.metadata,
               "status" => product.status,
               "position" => product.position

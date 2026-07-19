@@ -17,7 +17,7 @@ module ZeroXDA
             sku: price.sku,
             amount_usdt: price.amount_usdt,
             source: price.source,
-            set_by_telegram_user_id: price.set_by_telegram_user_id,
+            set_by_user_id: price.set_by_user_id,
             created_at: price.created_at
           )
           price
@@ -52,7 +52,7 @@ module ZeroXDA
             sku: row.fetch(:sku),
             amount_usdt: BigDecimal(row.fetch(:amount_usdt).to_s),
             source: row.fetch(:source),
-            set_by_telegram_user_id: row.fetch(:set_by_telegram_user_id),
+            set_by_user_id: row.fetch(:set_by_user_id),
             created_at: row.fetch(:created_at)
           )
         end

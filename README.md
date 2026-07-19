@@ -84,9 +84,23 @@ the persisted `admin` role.
 
 ## Product catalog
 
-`market.products` stores stable SKUs, display labels, ordering and opaque JSON
-metadata. The lifecycle kernel does not interpret product families, amounts,
-currencies or fulfillment semantics.
+`market.products` stores the locale-neutral current state: stable SKU, short
+name, ordering, status, opaque metadata, current USDT price snapshot, update
+timestamps and the internal UUID of the user who edited it. The lifecycle
+kernel does not interpret product families, amounts, currencies or fulfillment
+semantics.
+
+User-facing names live in `market.product_localizations`, keyed by
+`(product_sku, locale)`. Each row contains the full name and Telegram button
+label. The default locale is `en_US`; `uk_UA` is seeded for the entire initial
+catalog. Resolution follows `requested locale -> en_US -> products.short_name`,
+so missing translations never remove a product from the catalog.
+
+`market.product_prices` remains an append-only price history for audit and the
+daily previous/current comparison. A database trigger updates the current
+snapshot in `market.products` after each price insertion. Editors are stored as
+provider-independent `market.users.id` values; legacy Telegram IDs remain only
+on historical rows created before the UUID migration.
 
 The initial test catalog contains nine active products:
 
@@ -97,16 +111,16 @@ The initial test catalog contains nine active products:
 Both bot-facing APIs expose the same ordered catalog:
 
 ```sh
-curl -sS http://localhost:9292/v1/products \
+curl -sS 'http://localhost:9292/v1/products?locale=uk_UA' \
   -H 'authorization: Bearer client-secret'
 
-curl -sS http://localhost:9292/operator/v1/products \
+curl -sS 'http://localhost:9292/operator/v1/products?locale=uk_UA' \
   -H 'authorization: Bearer operator-secret'
 ```
 
-Only active products are returned. Product-specific behavior remains in
-providers and consumers; adding a catalog row never adds knowledge to the
-provider-agnostic kernel.
+Only active products are returned. Omitting `locale` returns `en_US`.
+Product-specific behavior remains in providers and consumers; adding a catalog
+row never adds knowledge to the provider-agnostic kernel.
 
 ## Lifecycle
 

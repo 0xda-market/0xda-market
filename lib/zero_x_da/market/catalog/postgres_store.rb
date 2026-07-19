@@ -7,35 +7,76 @@ module ZeroXDA
   module Market
     module Catalog
       class PostgresStore
+        DEFAULT_LOCALE = "en_US"
+        SUPPORTED_LOCALES = %w[en_US uk_UA].freeze
+
         def initialize(database:)
           @products = database.connection[Sequel.qualify(:market, :products)]
+          @localizations = database.connection[
+            Sequel.qualify(:market, :product_localizations)
+          ]
         end
 
-        def list_products(status:)
-          @products.where(status: status).order(:position, :sku).all.map do |row|
-            deserialize(row)
+        def list_products(status:, locale: DEFAULT_LOCALE)
+          locale = normalize_locale(locale)
+          rows = @products.where(status: status).order(:position, :sku).all
+          translations = translations_for(rows.map { |row| row.fetch(:sku) }, locale)
+          rows.map do |row|
+            deserialize(row, locale: locale, translation: translations.fetch(row.fetch(:sku)))
           end
         end
 
-        def find_product(sku)
+        def find_product(sku, locale: DEFAULT_LOCALE)
+          locale = normalize_locale(locale)
           row = @products.where(sku: sku.to_s).first
-          row && deserialize(row)
+          return nil unless row
+
+          translation = translations_for([row.fetch(:sku)], locale).fetch(row.fetch(:sku))
+          deserialize(row, locale: locale, translation: translation)
         end
 
         private
 
-        def deserialize(row)
+        def translations_for(skus, locale)
+          rows = @localizations.where(
+            product_sku: skus,
+            locale: [locale, DEFAULT_LOCALE]
+          ).all
+          grouped = rows.group_by { |row| row.fetch(:product_sku) }
+          skus.to_h do |sku|
+            candidates = grouped.fetch(sku, [])
+            requested = candidates.find { |row| row.fetch(:locale) == locale }
+            fallback = candidates.find { |row| row.fetch(:locale) == DEFAULT_LOCALE }
+            [sku, requested || fallback || {}]
+          end
+        end
+
+        def deserialize(row, locale:, translation:)
+          short_name = row.fetch(:short_name)
           Product.new(
             sku: row.fetch(:sku),
-            name: row.fetch(:name),
-            button_label: row.fetch(:button_label),
+            short_name: short_name,
+            name: translation.fetch(:full_name, short_name),
+            button_label: translation.fetch(:button_label, short_name),
+            locale: translation.fetch(:locale, DEFAULT_LOCALE),
             metadata: document(row.fetch(:metadata)),
             status: row.fetch(:status),
             position: row.fetch(:position),
+            current_price_usdt: row.fetch(:current_price_usdt),
+            price_updated_at: row.fetch(:price_updated_at),
+            price_updated_by_user_id: row.fetch(:price_updated_by_user_id),
+            updated_by_user_id: row.fetch(:updated_by_user_id),
             created_at: row.fetch(:created_at),
             updated_at: row.fetch(:updated_at),
             version: row.fetch(:version)
           )
+        end
+
+        def normalize_locale(value)
+          normalized = value.to_s.tr("-", "_")
+          return "uk_UA" if normalized.downcase.start_with?("uk")
+
+          SUPPORTED_LOCALES.include?(normalized) ? normalized : DEFAULT_LOCALE
         end
 
         def document(value)
