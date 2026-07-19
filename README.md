@@ -90,7 +90,7 @@ currencies or fulfillment semantics.
 
 The initial test catalog contains nine active products:
 
-- Telegram Premium 3, 6 and 9 months;
+- Telegram Premium 3, 6 and 12 months;
 - Stars 500, 1000 and 3000;
 - TON, BTC and ETH.
 

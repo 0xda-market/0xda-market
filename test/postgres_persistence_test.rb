@@ -82,7 +82,10 @@ class PostgresPersistenceTest < Minitest::Test
       Sequel.qualify(:market, :schema_migrations)
     ].select_map(:version)
     assert_equal(
-      %w[001_initial 002_telegram_demo 003_users_and_identities 004_products 005_pricing],
+      %w[
+        001_initial 002_telegram_demo 003_users_and_identities
+        004_products 005_pricing 006_replace_premium_9m_with_12m
+      ],
       versions
     )
   end
@@ -91,16 +94,17 @@ class PostgresPersistenceTest < Minitest::Test
     store = ZeroXDA::Market::Catalog::PostgresStore.new(database: @database)
 
     assert_equal 9, store.list_products(status: "active").length
-    premium = store.find_product("premium_9m")
-    assert_equal "Telegram Premium 9 міс.", premium.name
-    assert_equal 9, premium.metadata.fetch("duration_months")
+    premium = store.find_product("premium_12m")
+    assert_equal "Telegram Premium 12 міс.", premium.name
+    assert_equal 12, premium.metadata.fetch("duration_months")
+    assert_nil store.find_product("premium_9m")
 
     @database.disconnect
     @database = connect
     restarted = ZeroXDA::Market::Catalog::PostgresStore.new(database: @database)
 
     assert_equal %w[
-      premium_3m premium_6m premium_9m
+      premium_3m premium_6m premium_12m
       stars_500 stars_1000 stars_3000
       ton btc eth
     ], restarted.list_products(status: "active").map(&:sku)
