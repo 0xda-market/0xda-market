@@ -14,8 +14,6 @@ projects:
             healthCheckPath: /health
             autoDeployTrigger: checksPass
             envVars:
-              - key: RACK_ENV
-                value: production
               - key: PUBLIC_API_TOKEN
                 sync: false
               - key: MANUAL_PROVIDER_TOKEN
@@ -37,8 +35,6 @@ projects:
             healthCheckPath: /health
             autoDeployTrigger: checksPass
             envVars:
-              - key: RACK_ENV
-                value: production
               - key: PUBLIC_API_TOKEN
                 sync: false
               - key: MANUAL_PROVIDER_TOKEN
