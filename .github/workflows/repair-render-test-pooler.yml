@@ -1,0 +1,172 @@
+name: Repair Render test database endpoint
+
+on:
+  push:
+    branches:
+      - agent/repair-render-test-deploy
+    paths:
+      - .github/workflows/repair-render-test-pooler.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repair-render-test-database-endpoint
+  cancel-in-progress: false
+
+env:
+  RENDER_API_URL: https://api.render.com/v1
+  TEST_SERVICE_NAME: 0xda-market-test
+  SUPABASE_TEST_PROJECT_REF: cyxstycjamjdgvqmglsp
+  SUPABASE_POOLER_HOST: aws-0-eu-central-1.pooler.supabase.com
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+    steps:
+      - name: Validate Render credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RENDER_API_KEY" || {
+            echo "RENDER_API_KEY is missing" >&2
+            exit 1
+          }
+
+      - name: Resolve test service
+        id: service
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          services_json="$(curl --fail-with-body --silent --show-error \
+            --get \
+            --header "Authorization: Bearer $RENDER_API_KEY" \
+            --header "Accept: application/json" \
+            --data-urlencode "name=$TEST_SERVICE_NAME" \
+            --data-urlencode "limit=20" \
+            "$RENDER_API_URL/services")"
+
+          matches="$(jq --arg name "$TEST_SERVICE_NAME" \
+            '[.[] | .service | select(.name == $name)]' \
+            <<<"$services_json")"
+          match_count="$(jq 'length' <<<"$matches")"
+          if [[ "$match_count" != "1" ]]; then
+            echo "Expected one Render service named '$TEST_SERVICE_NAME'; found $match_count." >&2
+            exit 1
+          fi
+
+          service_id="$(jq -er '.[0].id' <<<"$matches")"
+          service_slug="$(jq -er '.[0].slug' <<<"$matches")"
+          echo "id=$service_id" >> "$GITHUB_OUTPUT"
+          echo "slug=$service_slug" >> "$GITHUB_OUTPUT"
+
+      - name: Replace direct IPv6 URL with session pooler URL
+        env:
+          SERVICE_ID: ${{ steps.service.outputs.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          current_database_url="$(curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $RENDER_API_KEY" \
+            "$RENDER_API_URL/services/$SERVICE_ID/env-vars/DATABASE_URL" \
+            | jq -er '.value')"
+          echo "::add-mask::$current_database_url"
+
+          pooler_database_url="$(CURRENT_DATABASE_URL="$current_database_url" \
+            python3 - <<'PY'
+          import os
+          from urllib.parse import quote, unquote, urlsplit
+
+          current = urlsplit(os.environ["CURRENT_DATABASE_URL"])
+          project_ref = os.environ["SUPABASE_TEST_PROJECT_REF"]
+          expected_hosts = {
+              f"db.{project_ref}.supabase.co",
+              os.environ["SUPABASE_POOLER_HOST"],
+          }
+
+          if current.scheme not in {"postgres", "postgresql"}:
+              raise SystemExit("DATABASE_URL is not PostgreSQL")
+          if current.hostname not in expected_hosts:
+              raise SystemExit("DATABASE_URL does not target the Supabase test project")
+          if current.password is None:
+              raise SystemExit("DATABASE_URL has no password")
+
+          username = quote(f"postgres.{project_ref}", safe="")
+          password = quote(unquote(current.password), safe="")
+          host = os.environ["SUPABASE_POOLER_HOST"]
+          print(
+              f"postgresql://{username}:{password}@{host}:5432/"
+              "postgres?sslmode=require"
+          )
+          PY
+          )"
+          echo "::add-mask::$pooler_database_url"
+
+          request_body="$(jq -n \
+            --arg value "$pooler_database_url" \
+            '{value: $value}')"
+          curl --fail-with-body --silent --show-error \
+            --request PUT \
+            --header "Authorization: Bearer $RENDER_API_KEY" \
+            --header "Content-Type: application/json" \
+            --data "$request_body" \
+            "$RENDER_API_URL/services/$SERVICE_ID/env-vars/DATABASE_URL" \
+            > /dev/null
+
+      - name: Deploy and verify
+        env:
+          SERVICE_ID: ${{ steps.service.outputs.id }}
+          SERVICE_SLUG: ${{ steps.service.outputs.slug }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          deploy_json="$(curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $RENDER_API_KEY" \
+            --header "Content-Type: application/json" \
+            --data '{"clearCache":"do_not_clear"}' \
+            "$RENDER_API_URL/services/$SERVICE_ID/deploys")"
+          deploy_id="$(jq -er '.id' <<<"$deploy_json")"
+
+          deploy_status=""
+          for _ in {1..90}; do
+            deploy_json="$(curl --fail-with-body --silent --show-error \
+              --header "Authorization: Bearer $RENDER_API_KEY" \
+              "$RENDER_API_URL/services/$SERVICE_ID/deploys/$deploy_id")"
+            deploy_status="$(jq -r '.status' <<<"$deploy_json")"
+            case "$deploy_status" in
+              live) break ;;
+              build_failed|update_failed|pre_deploy_failed|canceled|deactivated)
+                echo "Render deploy failed: $deploy_status" >&2
+                exit 1
+                ;;
+            esac
+            sleep 10
+          done
+
+          if [[ "$deploy_status" != "live" ]]; then
+            echo "Timed out waiting for Render deploy; last status: $deploy_status" >&2
+            exit 1
+          fi
+
+          health_url="https://$SERVICE_SLUG.onrender.com/health"
+          curl --fail --silent --show-error \
+            --retry 12 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            "$health_url" > /dev/null
+
+          {
+            echo "## Render test repair"
+            echo
+            echo "- Service: \`$TEST_SERVICE_NAME\`"
+            echo "- Deploy: \`$deploy_id\`"
+            echo "- Status: \`live\`"
+            echo "- Health: $health_url"
+          } >> "$GITHUB_STEP_SUMMARY"
