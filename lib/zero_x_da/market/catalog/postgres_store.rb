@@ -17,7 +17,10 @@ module ZeroXDA
           ]
         end
 
-        def list_products(status:, locale: DEFAULT_LOCALE, marketable: nil)
+        # Defaults to the sellable catalog (marketable: true) to match the
+        # legacy "list_products returns what you can sell" behavior. Pass
+        # marketable: false for currencies, or nil for both.
+        def list_products(status:, locale: DEFAULT_LOCALE, marketable: true)
           locale = normalize_locale(locale)
           scope = @products.where(status: status)
           scope = scope.where(marketable: marketable) unless marketable.nil?

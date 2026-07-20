@@ -128,6 +128,23 @@ module ZeroXDA
             )
           end
 
+          if method == "GET" && path == "/v1/currencies" && @catalog
+            locale = requested_locale(request)
+            currencies = @catalog.currencies(locale: locale)
+            data = currencies.map { |currency| present_currency(currency) }
+            return json_response(
+              200,
+              {
+                "data" => data,
+                "meta" => {
+                  "count" => currencies.length,
+                  "base_currency" => Localization::Service::BASE_CURRENCY,
+                  "locale" => locale
+                }
+              }
+            )
+          end
+
           if method == "GET" && path == "/v1/admin/prices/proposal" && @pricing && @identity_service
             @identity_service.require_admin(
               provider_user_id: request.params["actor_telegram_user_id"]
@@ -163,46 +180,6 @@ module ZeroXDA
               201,
               {
                 "data" => applied.map { |price| present_price(price) },
-                "meta" => { "count" => applied.length }
-              }
-            )
-          end
-
-          if method == "GET" && path == "/v1/fx-rates" && @localization
-            rates = @localization.rates
-            return json_response(
-              200,
-              {
-                "data" => rates.map { |rate| present_fx_rate(rate) },
-                "meta" => {
-                  "count" => rates.length,
-                  "base_currency" => Localization::Service::BASE_CURRENCY
-                }
-              }
-            )
-          end
-
-          if method == "POST" && path == "/v1/admin/fx-rates" && @localization && @identity_service
-            body = request_document(request)
-            actor = body.fetch("actor_telegram_user_id")
-            @identity_service.require_admin(provider_user_id: actor)
-            entries = body.fetch("rates")
-            unless entries.is_a?(Array) && !entries.empty?
-              raise ArgumentError, "rates must be a non-empty array"
-            end
-
-            applied = entries.map do |entry|
-              raise ArgumentError, "rate entry must be an object" unless entry.is_a?(Hash)
-
-              @localization.set_rate(
-                currency: entry.fetch("currency"),
-                usdt_per_unit: entry.fetch("usdt_per_unit")
-              )
-            end
-            return json_response(
-              201,
-              {
-                "data" => applied.map { |rate| present_fx_rate(rate) },
                 "meta" => { "count" => applied.length }
               }
             )
@@ -395,6 +372,17 @@ module ZeroXDA
           }
         end
 
+        # Currencies share the product shape plus their current rate: USDT
+        # paid per 1 unit, taken from the same price history as any product.
+        def present_currency(currency)
+          resource = present_product(currency)
+          resource["type"] = "currency"
+          resource["attributes"]["code"] = currency.currency_code
+          resource["attributes"]["usdt_per_unit"] =
+            currency.current_price_usdt && decimal_string(currency.current_price_usdt)
+          resource
+        end
+
         def present_localized_price(price, currency)
           amount = if @localization
                      @localization.convert(amount_usdt: price.amount_usdt, currency: currency)
@@ -421,18 +409,6 @@ module ZeroXDA
               "source" => price.source,
               "edited_by_user_id" => price.set_by_user_id,
               "applied_at" => timestamp(price.created_at)
-            }
-          }
-        end
-
-        def present_fx_rate(rate)
-          {
-            "type" => "fx_rate",
-            "id" => rate.currency,
-            "attributes" => {
-              "currency" => rate.currency,
-              "usdt_per_unit" => decimal_string(rate.usdt_per_unit),
-              "updated_at" => timestamp(rate.updated_at)
             }
           }
         end
