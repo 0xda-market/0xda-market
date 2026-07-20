@@ -27,8 +27,6 @@ require_relative "lib/zero_x_da/market/catalog/service"
 require_relative "lib/zero_x_da/market/pricing/memory_store"
 require_relative "lib/zero_x_da/market/pricing/postgres_store"
 require_relative "lib/zero_x_da/market/pricing/service"
-require_relative "lib/zero_x_da/market/localization/memory_store"
-require_relative "lib/zero_x_da/market/localization/postgres_store"
 require_relative "lib/zero_x_da/market/localization/service"
 
 clock = -> { Time.now.utc }
@@ -87,12 +85,8 @@ pricing = ZeroXDA::Market::Pricing::Service.new(
   clock: clock
 )
 
-fx_store = if database
-             ZeroXDA::Market::Localization::PostgresStore.new(database: database)
-           else
-             ZeroXDA::Market::Localization::MemoryStore.new(clock: clock)
-           end
-localization = ZeroXDA::Market::Localization::Service.new(fx_store: fx_store)
+# Currencies are catalog products; their prices are the exchange rates.
+localization = ZeroXDA::Market::Localization::Service.new(catalog: catalog)
 
 manual_provider = if operator_token && !operator_token.empty?
                     ZeroXDA::Market::Providers::ManualProvider.new(
