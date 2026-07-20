@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "bigdecimal"
+require_relative "fx_rate"
 require_relative "locale"
 
 module ZeroXDA
@@ -48,6 +49,29 @@ module ZeroXDA
         def supported_currency?(currency)
           normalized = normalize_currency(currency)
           normalized == BASE_CURRENCY || !@fx_store.fx_rate(normalized).nil?
+        end
+
+        # The real buy-side rate: how many USDT we pay for one unit of the
+        # currency when acquiring the product quantity. Set by admins for now;
+        # the core pricing engine becomes the writer later without any
+        # interface change.
+        def set_rate(currency:, usdt_per_unit:, updated_at: Time.now.utc)
+          normalized = normalize_currency(currency)
+          if normalized == BASE_CURRENCY
+            raise ArgumentError, "base currency rate is fixed at 1"
+          end
+
+          @fx_store.upsert_fx_rate(
+            FxRate.new(
+              currency: normalized,
+              usdt_per_unit: usdt_per_unit,
+              updated_at: updated_at
+            )
+          )
+        end
+
+        def rates
+          @fx_store.fx_rates
         end
 
         def upsert_fx_rate(rate)
