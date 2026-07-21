@@ -1,0 +1,93 @@
+name: Deploy API to VPS
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_PORT: ${{ vars.VPS_PORT || '22' }}
+      VPS_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH || '/opt/0xda-market' }}
+      RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+
+    steps:
+      - name: Validate deployment configuration
+        run: |
+          set -Eeuo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          test -n "$VPS_SSH_PRIVATE_KEY"
+          test -n "$VPS_PORT"
+          test -n "$VPS_DEPLOY_PATH"
+          test -n "$RELEASE_SHA"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Configure SSH
+        run: |
+          set -Eeuo pipefail
+          install -m 0700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" >"$HOME/.ssh/id_ed25519"
+          chmod 0600 "$HOME/.ssh/id_ed25519"
+          ssh-keyscan -p "$VPS_PORT" -H "$VPS_HOST" >>"$HOME/.ssh/known_hosts"
+
+      - name: Upload release
+        run: |
+          set -Eeuo pipefail
+          archive="/tmp/0xda-market-${RELEASE_SHA}.tar.gz"
+          tar --exclude=.git --exclude='deploy/vps/.env' -czf "$archive" .
+          scp -P "$VPS_PORT" "$archive" "$VPS_USER@$VPS_HOST:/tmp/"
+
+      - name: Activate release
+        run: |
+          set -Eeuo pipefail
+          ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+            "DEPLOY_PATH='$VPS_DEPLOY_PATH' RELEASE_SHA='$RELEASE_SHA' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+
+          archive="/tmp/0xda-market-${RELEASE_SHA}.tar.gz"
+          release_dir="$DEPLOY_PATH/releases/$RELEASE_SHA"
+
+          test -f "$DEPLOY_PATH/shared/.env"
+          rm -rf "$release_dir"
+          mkdir -p "$release_dir"
+          tar -xzf "$archive" -C "$release_dir"
+          rm -f "$archive"
+
+          ln -sfn "$DEPLOY_PATH/shared/.env" "$release_dir/deploy/vps/.env"
+          bash "$release_dir/deploy/vps/deploy.sh"
+          ln -sfn "$release_dir" "$DEPLOY_PATH/current"
+
+          find "$DEPLOY_PATH/releases" \
+            -mindepth 1 \
+            -maxdepth 1 \
+            -type d \
+            -printf '%T@ %p\n' \
+            | sort -nr \
+            | tail -n +4 \
+            | cut -d' ' -f2- \
+            | xargs -r rm -rf
+          REMOTE
