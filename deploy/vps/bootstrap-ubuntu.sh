@@ -64,11 +64,31 @@ sort -u /home/deploy/.ssh/authorized_keys -o /home/deploy/.ssh/authorized_keys
 chown deploy:deploy /home/deploy/.ssh/authorized_keys
 chmod 0600 /home/deploy/.ssh/authorized_keys
 
-ufw allow OpenSSH
+# Preserve every configured SSH port, and especially the port used by the
+# current session, before enabling UFW. This prevents remote lockout on VPS
+# images that expose SSH on a non-standard port such as 22022.
+mapfile -t ssh_ports < <(
+  {
+    if [[ -n "${SSH_CONNECTION:-}" ]]; then
+      awk '{print $4}' <<<"${SSH_CONNECTION}"
+    fi
+    sshd -T 2>/dev/null | awk '$1 == "port" { print $2 }'
+  } | awk '/^[0-9]+$/' | sort -nu
+)
+
+if [[ "${#ssh_ports[@]}" -eq 0 ]]; then
+  ssh_ports=(22)
+fi
+
+for ssh_port in "${ssh_ports[@]}"; do
+  ufw allow "${ssh_port}/tcp"
+done
 ufw allow 80/tcp
 ufw allow 443/tcp
 ufw allow 443/udp
 ufw --force enable
+
+primary_ssh_port="${ssh_ports[0]}"
 
 cat <<EOF
 
@@ -83,7 +103,7 @@ Copy its full contents into the production environment secret:
 Repository production settings:
   secret VPS_HOST=<public VPS IP>
   secret VPS_USER=deploy
-  variable VPS_PORT=22
+  variable VPS_PORT=${primary_ssh_port}
   variable VPS_DEPLOY_PATH=/opt/0xda-market
 
 Before the first release deployment, create:
