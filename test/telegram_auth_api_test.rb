@@ -13,17 +13,16 @@ class TelegramAuthAPITest < Minitest::Test
     clock = MutableClock.new
     provider = TestProvider.new(clock: clock)
     kernel, = build_kernel(provider: provider, clock: clock)
-    identity_service = ZeroXDA::Market::Identity::TelegramAuthService.new(
+    @identity_service = ZeroXDA::Market::Identity::TelegramAuthService.new(
       store: ZeroXDA::Market::Identity::MemoryStore.new,
       clock: clock,
-      id_generator: SequenceIDs.new,
-      bootstrap_admin_ids: [99]
+      id_generator: SequenceIDs.new
     )
     @client = Rack::MockRequest.new(
       ZeroXDA::Market::Transport::JSONAPI.new(
         kernel: kernel,
         token: "client-secret",
-        identity_service: identity_service
+        identity_service: @identity_service
       )
     )
   end
@@ -99,6 +98,7 @@ class TelegramAuthAPITest < Minitest::Test
   end
 
   def test_admin_promotes_a_user_and_receives_the_target_chat
+    @identity_service.bootstrap_admin(provider_user_id: 99)
     post_auth(
       telegram_user_id: 99,
       chat_id: 990,
