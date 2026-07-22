@@ -7,21 +7,13 @@ require_relative "lib/zero_x_da/market/adapters/memory_store"
 require_relative "lib/zero_x_da/market/adapters/postgres_database"
 require_relative "lib/zero_x_da/market/adapters/postgres_store"
 require_relative "lib/zero_x_da/market/adapters/postgres_manual_task_store"
-require_relative "lib/zero_x_da/market/adapters/postgres_telegram_store"
 require_relative "lib/zero_x_da/market/providers/manual_provider"
 require_relative "lib/zero_x_da/market/transport/json_api"
-require_relative "lib/zero_x_da/market/transport/telegram_user_identity"
 require_relative "lib/zero_x_da/market/transport/manual_api"
-require_relative "lib/zero_x_da/market/telegram/bot_api"
-require_relative "lib/zero_x_da/market/telegram/broker_bot"
-require_relative "lib/zero_x_da/market/telegram/client_bot"
-require_relative "lib/zero_x_da/market/telegram/configuration"
-require_relative "lib/zero_x_da/market/telegram/demo_flow"
-require_relative "lib/zero_x_da/market/telegram/memory_store"
-require_relative "lib/zero_x_da/market/telegram/webhook"
+require_relative "lib/zero_x_da/market/identity/admin_service"
 require_relative "lib/zero_x_da/market/identity/memory_store"
 require_relative "lib/zero_x_da/market/identity/postgres_store"
-require_relative "lib/zero_x_da/market/identity/telegram_auth_service"
+require_relative "lib/zero_x_da/market/identity/service"
 require_relative "lib/zero_x_da/market/catalog/memory_store"
 require_relative "lib/zero_x_da/market/catalog/postgres_store"
 require_relative "lib/zero_x_da/market/catalog/service"
@@ -35,7 +27,6 @@ environment = ENV.fetch("DEPLOY_ENV", "development")
 public_token = ENV["PUBLIC_API_TOKEN"]
 operator_token = ENV["MANUAL_PROVIDER_TOKEN"]
 database_url = ENV["DATABASE_URL"]
-telegram_configuration = ZeroXDA::Market::Telegram::Configuration.from_env(ENV)
 
 if environment == "production"
   required_secrets = {
@@ -104,7 +95,11 @@ kernel = ZeroXDA::Market::Core::Kernel.new(
   id_generator: SecureRandom.method(:uuid)
 )
 
-identity_service = ZeroXDA::Market::Identity::TelegramAuthService.new(
+identity_service = ZeroXDA::Market::Identity::Service.new(
+  store: identity_store,
+  clock: clock
+)
+admin_service = ZeroXDA::Market::Identity::AdminService.new(
   store: identity_store,
   clock: clock
 )
@@ -113,6 +108,7 @@ public_api = ZeroXDA::Market::Transport::JSONAPI.new(
   token: public_token,
   readiness: -> { store.healthy? },
   identity_service: identity_service,
+  admin_service: admin_service,
   catalog: catalog,
   pricing: pricing,
   localization: localization
@@ -128,52 +124,6 @@ if manual_provider
     catalog: catalog
   )
   applications["/operator"] = operator_api
-end
-
-if telegram_configuration
-  raise "Telegram bots require MANUAL_PROVIDER_TOKEN" unless manual_provider
-
-  telegram_store = if database
-                     ZeroXDA::Market::Adapters::PostgresTelegramStore.new(database: database)
-                   else
-                     ZeroXDA::Market::Telegram::MemoryStore.new
-                   end
-  client_bot_api = ZeroXDA::Market::Telegram::BotAPI.new(
-    token: telegram_configuration.client_token
-  )
-  broker_bot_api = ZeroXDA::Market::Telegram::BotAPI.new(
-    token: telegram_configuration.broker_token
-  )
-  telegram_flow = ZeroXDA::Market::Telegram::DemoFlow.new(
-    kernel: kernel,
-    provider: manual_provider,
-    store: telegram_store,
-    client_api: client_bot_api,
-    broker_api: broker_bot_api,
-    clock: clock
-  )
-  client_bot = ZeroXDA::Market::Telegram::ClientBot.new(
-    flow: telegram_flow,
-    api: client_bot_api
-  )
-  broker_bot = ZeroXDA::Market::Telegram::BrokerBot.new(
-    flow: telegram_flow,
-    api: broker_bot_api
-  )
-  applications["/telegram/client"] = ZeroXDA::Market::Telegram::Webhook.new(
-    role: "client",
-    secret_token: telegram_configuration.secret_token("client"),
-    handler: client_bot,
-    store: telegram_store,
-    clock: clock
-  )
-  applications["/telegram/broker"] = ZeroXDA::Market::Telegram::Webhook.new(
-    role: "broker",
-    secret_token: telegram_configuration.secret_token("broker"),
-    handler: broker_bot,
-    store: telegram_store,
-    clock: clock
-  )
 end
 
 run Rack::URLMap.new(applications)
