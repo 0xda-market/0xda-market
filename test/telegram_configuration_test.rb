@@ -9,6 +9,12 @@ class TelegramConfigurationTest < Minitest::Test
     assert_nil ZeroXDA::Market::Telegram::Configuration.from_env({})
   end
 
+  def test_returns_nil_when_only_the_legacy_webhook_base_url_is_present
+    assert_nil ZeroXDA::Market::Telegram::Configuration.from_env(
+      "TELEGRAM_WEBHOOK_BASE_URL" => "https://example.test"
+    )
+  end
+
   def test_rejects_partial_configuration
     error = assert_raises(ArgumentError) do
       ZeroXDA::Market::Telegram::Configuration.from_env(
