@@ -9,7 +9,7 @@ The application remains unchanged. The deployment layer provides:
 - Caddy as the only public entry point on ports `80` and `443`;
 - automatic HTTPS after DNS points to the VM;
 - health-gated deployments;
-- automatic deployment only after green `CI` on the `release` branch;
+- automatic deployment only after green `CI` on a `release*` branch;
 - three retained source releases for manual rollback.
 
 Render should remain active until the VPS has passed the public health checks.
@@ -24,7 +24,7 @@ Current state of the VPS migration:
 - [ ] bootstrap the VPS and verify Docker, Compose, SSH, Fail2ban, UFW and swap;
 - [ ] create `/opt/0xda-market/shared/.env` with production values;
 - [ ] configure the GitHub `production` environment secrets;
-- [ ] run the first health-gated deployment from `release`;
+- [ ] run the first health-gated deployment from a `release*` branch;
 - [ ] switch DNS only after the API container is healthy;
 - [ ] verify public HTTPS and client bot traffic before retiring Render.
 
@@ -97,15 +97,16 @@ Environment variables:
 The workflow uses SSH port `22022` directly; no `VPS_PORT` repository or
 environment variable is consumed.
 
-A push to `release` first runs the normal CI suite and Docker build. Only a
-successful CI workflow starts `Deploy API to VPS`. The VPS deployment builds
-the same Dockerfile again, applies migrations during container startup and
-waits for the Docker health check before marking the release active.
+A push to any branch whose name starts with `release` first runs the normal CI
+suite and Docker build. Only a successful CI workflow starts `Deploy API to
+VPS`. The VPS deployment builds the same Dockerfile again, applies migrations
+during container startup and waits for the Docker health check before marking
+the release active.
 
 ## 4. First deployment before DNS cutover
 
-Promote the intended commit to `release`. After both workflows are green,
-inspect the VM:
+Promote the intended commit to a `release*` branch. After both workflows are
+green, inspect the VM:
 
 ```sh
 cd /opt/0xda-market/current/deploy/vps
