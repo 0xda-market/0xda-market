@@ -77,9 +77,10 @@ class RuntimeTest < Minitest::Test
     ) do
       app = Rack::Builder.parse_file(File.expand_path("../config.ru", __dir__))
       client = Rack::MockRequest.new(app)
+      headers = { "HTTP_AUTHORIZATION" => "Bearer client-secret" }
 
-      assert_equal 404, client.get("/telegram/client").status
-      assert_equal 404, client.get("/telegram/broker").status
+      assert_equal 404, client.get("/telegram/client", headers).status
+      assert_equal 404, client.get("/telegram/broker", headers).status
     end
   end
 
