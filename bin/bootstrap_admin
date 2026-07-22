@@ -3,12 +3,12 @@
 
 require "bundler/setup"
 require_relative "../lib/zero_x_da/market/adapters/postgres_database"
+require_relative "../lib/zero_x_da/market/identity/admin_service"
 require_relative "../lib/zero_x_da/market/identity/postgres_store"
-require_relative "../lib/zero_x_da/market/identity/telegram_auth_service"
 
-telegram_user_id = ARGV.first
-if telegram_user_id.nil? || telegram_user_id.empty?
-  warn "Usage: bundle exec ruby bin/bootstrap_admin TELEGRAM_USER_ID"
+user_id = ARGV.first
+if user_id.nil? || user_id.empty?
+  warn "Usage: bundle exec ruby bin/bootstrap_admin USER_ID"
   exit 64
 end
 
@@ -25,13 +25,12 @@ database = ZeroXDA::Market::Adapters::PostgresDatabase.new(
 
 begin
   store = ZeroXDA::Market::Identity::PostgresStore.new(database: database)
-  service = ZeroXDA::Market::Identity::TelegramAuthService.new(store: store)
-  result = service.bootstrap_admin(provider_user_id: telegram_user_id)
+  service = ZeroXDA::Market::Identity::AdminService.new(store: store)
+  result = service.bootstrap(user_id: user_id)
 
   puts "admin bootstrap complete"
-  puts "telegram_user_id=#{result.identity.provider_user_id}"
   puts "user_id=#{result.user.id}"
-  puts "created=#{result.created}"
+  puts "changed=#{result.changed}"
 ensure
   database.disconnect
 end
