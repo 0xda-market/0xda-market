@@ -242,10 +242,9 @@ class PostgresPersistenceTest < Minitest::Test
     service = ZeroXDA::Market::Identity::TelegramAuthService.new(
       store: ZeroXDA::Market::Identity::PostgresStore.new(database: @database),
       clock: clock,
-      id_generator: -> { identifiers.next },
-      bootstrap_admin_ids: [77]
+      id_generator: -> { identifiers.next }
     )
-    service.authenticate(
+    service.bootstrap_admin(
       provider_user_id: 77,
       provider_data: { chat_id: "77", username: "owner" }
     )
