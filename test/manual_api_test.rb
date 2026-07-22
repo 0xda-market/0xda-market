@@ -5,7 +5,7 @@ require "rack/mock"
 require "zero_x_da/market/providers/manual_provider"
 require "zero_x_da/market/transport/manual_api"
 require "zero_x_da/market/identity/memory_store"
-require "zero_x_da/market/identity/telegram_auth_service"
+require "zero_x_da/market/identity/service"
 require "zero_x_da/market/catalog/memory_store"
 require "zero_x_da/market/catalog/product"
 require "zero_x_da/market/catalog/service"
@@ -39,7 +39,7 @@ class ManualAPITest < Minitest::Test
       ZeroXDA::Market::Transport::ManualAPI.new(
         provider: @provider,
         token: "operator-secret",
-        identity_service: ZeroXDA::Market::Identity::TelegramAuthService.new(
+        identity_service: ZeroXDA::Market::Identity::Service.new(
           store: ZeroXDA::Market::Identity::MemoryStore.new,
           clock: @clock,
           id_generator: SequenceIDs.new
@@ -123,18 +123,28 @@ class ManualAPITest < Minitest::Test
     assert_equal "broker-1", attributes.fetch("claimed_by")
   end
 
-  def test_authenticates_a_telegram_broker
+  def test_authenticates_an_external_broker
     response = authorized_post(
-      "/v1/auth/telegram",
-      telegram_user_id: 77,
-      chat_id: 770,
-      username: "zero"
+      "/v1/auth/external",
+      provider: "telegram",
+      provider_user_id: 77,
+      provider_data: { chat_id: "770", username: "zero" }
     )
 
     assert_equal 201, response.status
     resource = JSON.parse(response.body).fetch("data")
     assert_equal "broker", resource.dig("attributes", "role")
+    assert_equal "telegram", resource.dig("attributes", "identity", "provider")
     assert_equal "77", resource.dig("attributes", "identity", "provider_user_id")
+  end
+
+  def test_depends_on_a_task_service_contract_not_a_concrete_provider_class
+    fake = Object.new
+    error = assert_raises(ArgumentError) do
+      ZeroXDA::Market::Transport::ManualAPI.new(provider: fake, token: "operator-secret")
+    end
+
+    assert_includes error.message, "task service is missing methods"
   end
 
   private
