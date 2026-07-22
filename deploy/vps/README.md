@@ -18,7 +18,7 @@ Render should remain active until the VPS has passed the public health checks.
 
 Current state of the VPS migration:
 
-- [x] deployment files and rollback procedure are prepared in this draft PR;
+- [x] deployment files and rollback procedure are merged into `master`;
 - [x] repository references use `0xda-market/0xda-market`;
 - [x] the SSH deployment port is fixed at `22022` in documentation and CI;
 - [ ] bootstrap the VPS and verify Docker, Compose, SSH, Fail2ban, UFW and swap;
@@ -28,7 +28,7 @@ Current state of the VPS migration:
 - [ ] switch DNS only after the API container is healthy;
 - [ ] verify public HTTPS and client bot traffic before retiring Render.
 
-No production deployment or DNS cutover is performed by this PR.
+No production deployment or DNS cutover has been performed.
 
 ## 1. VM baseline
 
@@ -92,8 +92,10 @@ Environment secrets:
 
 Environment variables:
 
-- `VPS_PORT`: `22022`;
 - `VPS_DEPLOY_PATH`: `/opt/0xda-market`.
+
+The workflow uses SSH port `22022` directly; no `VPS_PORT` repository or
+environment variable is consumed.
 
 A push to `release` first runs the normal CI suite and Docker build. Only a
 successful CI workflow starts `Deploy API to VPS`. The VPS deployment builds
