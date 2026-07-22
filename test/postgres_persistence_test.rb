@@ -5,11 +5,10 @@ require "zero_x_da/market/adapters/postgres_database"
 require "zero_x_da/market/adapters/postgres_migrator"
 require "zero_x_da/market/adapters/postgres_store"
 require "zero_x_da/market/adapters/postgres_manual_task_store"
-require "zero_x_da/market/adapters/postgres_telegram_store"
 require "zero_x_da/market/providers/manual_provider"
 require "zero_x_da/market/identity/admin_service"
 require "zero_x_da/market/identity/postgres_store"
-require "zero_x_da/market/identity/telegram_auth_service"
+require "zero_x_da/market/identity/service"
 require "zero_x_da/market/catalog/postgres_store"
 
 class PostgresPersistenceTest < Minitest::Test
@@ -182,7 +181,7 @@ class PostgresPersistenceTest < Minitest::Test
     end
   end
 
-  def test_telegram_identity_survives_reconnection
+  def test_external_identity_survives_reconnection
     clock = MutableClock.new
     identifiers = [
       "00000000-0000-4000-8000-000000000001",
@@ -190,6 +189,7 @@ class PostgresPersistenceTest < Minitest::Test
     ].each
     service = build_identity_service(@database, clock, -> { identifiers.next })
     first = service.authenticate(
+      provider: "telegram",
       provider_user_id: 77,
       provider_data: { chat_id: "77", username: "zero" }
     )
@@ -202,6 +202,7 @@ class PostgresPersistenceTest < Minitest::Test
       -> { raise "an existing identity must not generate another id" }
     )
     second = restarted.authenticate(
+      provider: "telegram",
       provider_user_id: 77,
       provider_data: { chat_id: "770", username: "zero_updated" }
     )
@@ -212,7 +213,7 @@ class PostgresPersistenceTest < Minitest::Test
     assert_equal "770", second.identity.provider_data.fetch("chat_id")
   end
 
-  def test_telegram_auth_recovers_from_a_stale_pooled_connection
+  def test_external_identity_auth_recovers_from_a_stale_pooled_connection
     clock = MutableClock.new
     identifiers = [
       "00000000-0000-4000-8000-000000000021",
@@ -223,12 +224,13 @@ class PostgresPersistenceTest < Minitest::Test
     @database.connection.synchronize(&:finish)
 
     authentication = service.authenticate(
-      provider_user_id: 77,
-      provider_data: { chat_id: "77", username: "zero" }
+      provider: "github",
+      provider_user_id: "75973992",
+      provider_data: { login: "0x0sky" }
     )
 
     assert authentication.created
-    assert_equal "77", authentication.identity.provider_user_id
+    assert_equal "75973992", authentication.identity.provider_user_id
     assert @database.healthy?
   end
 
@@ -241,99 +243,36 @@ class PostgresPersistenceTest < Minitest::Test
       "00000000-0000-4000-8000-000000000014"
     ].each
     store = ZeroXDA::Market::Identity::PostgresStore.new(database: @database)
-    service = ZeroXDA::Market::Identity::TelegramAuthService.new(
+    service = ZeroXDA::Market::Identity::Service.new(
       store: store,
       clock: clock,
       id_generator: -> { identifiers.next }
     )
     owner = service.authenticate(
+      provider: "telegram",
       provider_user_id: 77,
       provider_data: { chat_id: "77", username: "owner" }
     )
-    ZeroXDA::Market::Identity::AdminService.new(
+    target = service.authenticate(
+      provider: "github",
+      provider_user_id: "target",
+      provider_data: { login: "target_user" }
+    )
+    admin_service = ZeroXDA::Market::Identity::AdminService.new(
       store: store,
       clock: clock
-    ).bootstrap(user_id: owner.user.id)
-    target = service.authenticate(
-      provider_user_id: 78,
-      provider_data: { chat_id: "78", username: "target_user" }
     )
-    service.set_admin(actor_provider_user_id: 77, target: "@target_user")
+    admin_service.bootstrap(user_id: owner.user.id)
+    admin_service.assign_admin(
+      actor_user_id: owner.user.id,
+      target_user_id: target.user.id
+    )
 
     @database.disconnect
     @database = connect
     store = ZeroXDA::Market::Identity::PostgresStore.new(database: @database)
 
     assert_equal "admin", store.find_user(target.user.id).role
-  end
-
-  def test_telegram_broker_and_demo_order_state_survive_reconnection
-    clock = MutableClock.new
-    kernel, provider = build_application(@database, clock, SequenceIDs.new)
-    intent = kernel.create_intent(
-      capability: "manual.fulfillment",
-      payload: { item: "100 stars" },
-      context: { client_chat_id: "201" }
-    )
-    order = kernel.accept_quote(kernel.quote_intent(intent.id).id)
-    pending = kernel.execute_order(order.id)
-    task_id = pending.progress.fetch("reference")
-    telegram = ZeroXDA::Market::Adapters::PostgresTelegramStore.new(database: @database)
-    telegram.register_broker(
-      chat_id: "101",
-      user_id: "101",
-      username: "broker_one",
-      display_name: "Broker One",
-      at: clock.call
-    )
-    telegram.insert_demo_order(
-      task_id: task_id,
-      order_id: order.id,
-      client_chat_id: "201",
-      at: clock.call
-    )
-    provider.claim_task(task_id, assignee: "telegram:101")
-    telegram.assign_demo_order(
-      task_id: task_id,
-      broker_chat_id: "101",
-      at: clock.call
-    )
-
-    @database.disconnect
-    @database = connect
-    restarted = ZeroXDA::Market::Adapters::PostgresTelegramStore.new(database: @database)
-    restarted_kernel, restarted_provider = build_application(
-      @database,
-      clock,
-      -> { raise "persisted Telegram state must not generate another id" }
-    )
-
-    assert_equal "ready", restarted.fetch_broker("101").status
-    persisted = restarted.fetch_demo_order(task_id)
-    assert_equal "awaiting_payment", persisted.status
-    assert_equal "101", persisted.broker_chat_id
-    assert_equal "telegram:101", restarted_provider.fetch_task(task_id).claimed_by
-
-    paid, = restarted.pay_demo_order(
-      task_id: task_id,
-      client_chat_id: "201",
-      at: clock.call
-    )
-    restarted_provider.complete_task(
-      task_id,
-      reference: "telegram:broker:101",
-      data: { delivered: true }
-    )
-    restarted_kernel.execute_order(order.id)
-    completed, = restarted.complete_demo_order(
-      task_id: task_id,
-      broker_chat_id: "101",
-      at: clock.call
-    )
-
-    assert_equal "processing", paid.status
-    assert_equal "completed", completed.status
-    assert_equal "succeeded", restarted_kernel.find_order(order.id).status
   end
 
   private
@@ -369,7 +308,7 @@ class PostgresPersistenceTest < Minitest::Test
   end
 
   def build_identity_service(database, clock, id_generator)
-    ZeroXDA::Market::Identity::TelegramAuthService.new(
+    ZeroXDA::Market::Identity::Service.new(
       store: ZeroXDA::Market::Identity::PostgresStore.new(database: database),
       clock: clock,
       id_generator: id_generator
