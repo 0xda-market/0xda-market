@@ -7,6 +7,7 @@ require "zero_x_da/market/adapters/postgres_store"
 require "zero_x_da/market/adapters/postgres_manual_task_store"
 require "zero_x_da/market/adapters/postgres_telegram_store"
 require "zero_x_da/market/providers/manual_provider"
+require "zero_x_da/market/identity/admin_service"
 require "zero_x_da/market/identity/postgres_store"
 require "zero_x_da/market/identity/telegram_auth_service"
 require "zero_x_da/market/catalog/postgres_store"
@@ -239,16 +240,20 @@ class PostgresPersistenceTest < Minitest::Test
       "00000000-0000-4000-8000-000000000013",
       "00000000-0000-4000-8000-000000000014"
     ].each
+    store = ZeroXDA::Market::Identity::PostgresStore.new(database: @database)
     service = ZeroXDA::Market::Identity::TelegramAuthService.new(
-      store: ZeroXDA::Market::Identity::PostgresStore.new(database: @database),
+      store: store,
       clock: clock,
-      id_generator: -> { identifiers.next },
-      bootstrap_admin_ids: [77]
+      id_generator: -> { identifiers.next }
     )
-    service.authenticate(
+    owner = service.authenticate(
       provider_user_id: 77,
       provider_data: { chat_id: "77", username: "owner" }
     )
+    ZeroXDA::Market::Identity::AdminService.new(
+      store: store,
+      clock: clock
+    ).bootstrap(user_id: owner.user.id)
     target = service.authenticate(
       provider_user_id: 78,
       provider_data: { chat_id: "78", username: "target_user" }

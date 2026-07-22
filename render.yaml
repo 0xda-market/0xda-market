@@ -14,13 +14,13 @@ projects:
             healthCheckPath: /health
             autoDeployTrigger: checksPass
             envVars:
+              - key: DEPLOY_ENV
+                value: development
               - key: PUBLIC_API_TOKEN
                 sync: false
               - key: MANUAL_PROVIDER_TOKEN
                 sync: false
               - key: DATABASE_URL
-                sync: false
-              - key: ADMIN_TELEGRAM_IDS
                 sync: false
       - name: Production
         services:
@@ -35,11 +35,11 @@ projects:
             healthCheckPath: /health
             autoDeployTrigger: checksPass
             envVars:
+              - key: DEPLOY_ENV
+                value: production
               - key: PUBLIC_API_TOKEN
                 sync: false
               - key: MANUAL_PROVIDER_TOKEN
                 sync: false
               - key: DATABASE_URL
-                sync: false
-              - key: ADMIN_TELEGRAM_IDS
                 sync: false

@@ -1,43 +1,56 @@
-# Spaceship VPS deployment
+# VPS deployment
 
-This directory runs the provider-agnostic API on an Ubuntu-based Spaceship
-Starlight VM using Docker Compose and Caddy.
+This directory runs the provider-agnostic `0xda-market` API on one Ubuntu VPS
+with Docker Compose and Caddy.
 
-The application remains unchanged. The deployment layer provides:
+The VPS is intentionally **active/passive**: both environments can be staged,
+but only one complete core + bot stack may be running at a time.
 
-- an internal-only Puma container on port `10000`;
-- Caddy as the only public entry point on ports `80` and `443`;
-- automatic HTTPS after DNS points to the VM;
-- health-gated deployments;
-- automatic deployment only after green `CI` on a `release*` branch;
-- three retained source releases for manual rollback.
+## Environment contract
 
-Render should remain active until the VPS has passed the public health checks.
+| GitHub environment | Source branch | Telegram bot | Supabase database |
+| --- | --- | --- | --- |
+| `development` | `master` | `@zeroxda_market_test_bot` | test |
+| `production` | `release*` | `@zeroxda_market_bot` | production |
 
-## Preparation status
+`DEPLOY_ENV` is the only runtime environment marker. It must match the GitHub
+Environment and the VPS directory containing the runtime file.
 
-Current state of the VPS migration:
+## VPS layout
 
-- [x] deployment files and rollback procedure are merged into `master`;
-- [x] repository references use `0xda-market/0xda-market`;
-- [x] the SSH deployment port is fixed at `22022` in documentation and CI;
-- [ ] bootstrap the VPS and verify Docker, Compose, SSH, Fail2ban, UFW and swap;
-- [ ] create `/opt/0xda-market/shared/.env` with production values;
-- [ ] configure the GitHub `production` environment secrets;
-- [ ] run the first health-gated deployment from a `release*` branch;
-- [ ] switch DNS only after the API container is healthy;
-- [ ] verify public HTTPS and client bot traffic before retiring Render.
+```text
+/opt/0xda-market/
+  environments/
+    development/
+      current -> releases/<sha>
+      releases/
+      shared/.env
+    production/
+      current -> releases/<sha>
+      releases/
+      shared/.env
 
-No production deployment or DNS cutover has been performed.
+/opt/0xda-market-bot/
+  environments/
+    development/
+      current -> releases/<sha>
+      releases/
+      shared/.env
+    production/
+      current -> releases/<sha>
+      releases/
+      shared/.env
 
-## 1. VM baseline
+/opt/0xda-market-runtime/
+  active-environment
+```
 
-Use Ubuntu 24.04 LTS. A Spaceship Standard 1 VM is enough for the API and
-Caddy while PostgreSQL remains external in Supabase. The bootstrap adds 2 GiB
-of swap so Docker builds do not depend entirely on the VM's RAM.
+The state file contains either `development` or `production`. It is written only
+after both the core and bot health checks pass.
 
-Open the Spaceship Starlight Manager command line as `root`, then run the
-bootstrap after this change is merged:
+## Bootstrap
+
+Run as `root` on Ubuntu 24.04 LTS:
 
 ```sh
 curl -fsSL \
@@ -45,149 +58,169 @@ curl -fsSL \
   | bash
 ```
 
-The script installs Docker Engine and Compose from Docker's official Ubuntu
-repository, enables SSH, Fail2ban and UFW, creates the `deploy` user and a
-dedicated GitHub Actions SSH key, and creates `/opt/0xda-market`.
+The script installs Docker Engine and Compose, enables SSH, Fail2ban and UFW,
+creates the `deploy` user, keeps SSH port `22022` open, and prepares both
+repositories for both environments.
 
-Do not disable root password access until a separate personal SSH key has been
-tested successfully.
+## GitHub environments
 
-## 2. Runtime secrets
+Create `development` and `production` in both repositories.
 
-Create the production environment file on the VM:
+`0xda-market/0xda-market` secrets:
 
-```sh
-cp /opt/0xda-market/current/deploy/vps/.env.example \
-  /opt/0xda-market/shared/.env
-nano /opt/0xda-market/shared/.env
-chown deploy:deploy /opt/0xda-market/shared/.env
-chmod 0600 /opt/0xda-market/shared/.env
+- `VPS_HOST`
+- `VPS_USER=deploy`
+- `VPS_SSH_PRIVATE_KEY`
+
+Core variable:
+
+- `VPS_DEPLOY_PATH=/opt/0xda-market`
+
+`0xda-market/0xda-market-bot` uses the same three secrets and:
+
+- `VPS_BOT_DEPLOY_PATH=/opt/0xda-market-bot`
+
+The SSH port is fixed to `22022` in the workflows. Do not create `VPS_PORT`.
+Use required reviewers on the GitHub `production` environment before enabling a
+production cutover.
+
+## Runtime files
+
+Create one core runtime file per environment:
+
+```text
+/opt/0xda-market/environments/development/shared/.env
+/opt/0xda-market/environments/production/shared/.env
 ```
 
-For the first deployment, `current` does not exist yet. Copy the contents of
-`deploy/vps/.env.example` manually into `/opt/0xda-market/shared/.env` instead.
+Start from `deploy/vps/.env.example`. The values must be independent:
 
-Required values:
+```env
+DEPLOY_ENV=development
+DOMAIN=0xda-market.nilx.one
+DATABASE_URL=<development Supabase URL>
+PUBLIC_API_TOKEN=<development token>
+MANUAL_PROVIDER_TOKEN=<development token>
+VERIFY_PUBLIC_HTTPS=0
+```
 
-- `DOMAIN=nilx.one`;
-- `DATABASE_URL` for the production Supabase database;
-- distinct `PUBLIC_API_TOKEN` and `MANUAL_PROVIDER_TOKEN` values;
-- `ADMIN_TELEGRAM_IDS` when administrator bootstrap is needed;
-- `VERIFY_PUBLIC_HTTPS=0` before DNS cutover.
+The production file uses `DEPLOY_ENV=production`, the production Supabase URL,
+and distinct API tokens. Dedicated Telegram bot tokens do not belong in the
+core runtime file.
 
-Dedicated bot tokens do not belong in this core service. The legacy Telegram
-variables should remain empty unless the in-process demo transport is
-explicitly used.
-
-## 3. GitHub production environment
-
-Create or update the `production` environment in `0xda-market/0xda-market`.
-
-Environment secrets:
-
-- `VPS_HOST`: public IPv4 address of the VM;
-- `VPS_USER`: `deploy`;
-- `VPS_SSH_PRIVATE_KEY`: complete contents of
-  `/root/0xda-market-github-actions` from the VM.
-
-Environment variables:
-
-- `VPS_DEPLOY_PATH`: `/opt/0xda-market`.
-
-The workflow uses SSH port `22022` directly; no `VPS_PORT` repository or
-environment variable is consumed.
-
-A push to any branch whose name starts with `release` first runs the normal CI
-suite and Docker build. Only a successful CI workflow starts `Deploy API to
-VPS`. The VPS deployment builds the same Dockerfile again, applies migrations
-during container startup and waits for the Docker health check before marking
-the release active.
-
-## 4. First deployment before DNS cutover
-
-Promote the intended commit to a `release*` branch. After both workflows are
-green, inspect the VM:
+Protect all runtime files:
 
 ```sh
-cd /opt/0xda-market/current/deploy/vps
+chown deploy:deploy /opt/0xda-market/environments/*/shared/.env
+chmod 0600 /opt/0xda-market/environments/*/shared/.env
+```
+
+## Administrator bootstrap
+
+Administrator roles are persisted in Supabase. There is no
+`ADMIN_TELEGRAM_IDS` runtime variable and the bot is not a source of role data.
+
+The user must authenticate once so core creates a row in `market.users`. Obtain
+the internal UUID from the authenticated API resource (`data.id`) or the
+protected `/v1/users?status=active` response. Do not use a Telegram ID,
+username, chat ID, or another provider identifier for bootstrap.
+
+After the selected core environment is active and migrations have completed,
+promote the existing internal user once:
+
+```sh
+cd /opt/0xda-market/environments/development/current/deploy/vps
+docker compose exec -T api \
+  bundle exec ruby bin/bootstrap_admin USER_ID
+```
+
+Use the matching production path only after the production environment is
+reviewed and active. The command is idempotent: rerunning it keeps the same
+persisted `admin` role. An unknown internal user ID fails without creating a
+user or external identity. Subsequent administrator assignments use the normal
+admin-only application flow.
+
+## Deployment behavior
+
+After green `CI`:
+
+- a push to `master` stages or refreshes `development`;
+- a push to a `release*` branch stages or refreshes `production`;
+- an inactive environment is built and its `current` symlink is updated, but it
+  is not started;
+- an already active environment is updated immediately and health-gated;
+- a failed active refresh attempts to restart the previous release.
+
+A successful deploy does **not** switch the active environment.
+
+## Environment switch
+
+Use the manual GitHub Actions workflow `Switch VPS Environment` from the core
+repository. It is the only supported switch control.
+
+The controller:
+
+1. validates that both target releases and both target `.env` files exist;
+2. stops the inactive core and bot stacks;
+3. starts the target core and waits for health;
+4. starts the target bot and waits for health;
+5. writes `active-environment` atomically;
+6. restarts the previous environment when the target fails.
+
+Switching to production additionally requires the workflow confirmation checkbox
+and `CONFIRM_PRODUCTION=1` inside the controller.
+
+The same operation can be inspected manually on the VPS:
+
+```sh
+bash /opt/0xda-market/environments/development/current/deploy/vps/switch-environment.sh status
+```
+
+Manual development activation:
+
+```sh
+sudo -u deploy \
+  bash /opt/0xda-market/environments/development/current/deploy/vps/switch-environment.sh \
+  development
+```
+
+Manual production activation is intentionally explicit:
+
+```sh
+sudo -u deploy env CONFIRM_PRODUCTION=1 \
+  bash /opt/0xda-market/environments/production/current/deploy/vps/switch-environment.sh \
+  production
+```
+
+Prefer the reviewed GitHub workflow over manual activation.
+
+## Smoke checks
+
+For the active environment:
+
+```sh
+cat /opt/0xda-market-runtime/active-environment
+curl -i https://0xda-market.nilx.one/health
+```
+
+Inspect the selected core stack:
+
+```sh
+cd /opt/0xda-market/environments/development/current/deploy/vps
 docker compose ps
 docker compose logs --tail 200 api
 docker compose logs --tail 200 caddy
 ```
 
-The API container must be `healthy`. Caddy may not have a public certificate
-yet because `nilx.one` still points elsewhere. That is expected while
-`VERIFY_PUBLIC_HTTPS=0`.
+The bot remains a separate service and is verified from its repository layout.
 
-## 5. DNS cutover
+## Safety gates
 
-In Spaceship Advanced DNS:
-
-1. Lower the existing root record TTL to `300` before the cutover when
-   possible.
-2. Change only the root `A` record (`@`) to the VM's public IPv4 address.
-3. Remove a stale root `AAAA` record unless the VM has configured public IPv6.
-4. Keep all iCloud Mail `MX`, SPF, DKIM and verification `TXT` records intact.
-5. Keep or add `www CNAME nilx.one` only when `www` should reach the API too.
-
-Caddy obtains and renews the HTTPS certificate automatically after the domain
-resolves to the VM and ports `80` and `443` are reachable.
-
-Verify externally:
-
-```sh
-curl -i https://nilx.one/health
-```
-
-Then set this on the VM:
-
-```sh
-sed -i 's/^VERIFY_PUBLIC_HTTPS=.*/VERIFY_PUBLIC_HTTPS=1/' \
-  /opt/0xda-market/shared/.env
-```
-
-Run the current deploy script once so the public HTTPS verification is also
-checked:
-
-```sh
-bash /opt/0xda-market/current/deploy/vps/deploy.sh
-```
-
-## 6. Client bot cutover
-
-The production client bot currently uses `MARKET_API_URL`. After the VPS health
-check is green, change its production value from the Render API URL to:
-
-```text
-https://nilx.one
-```
-
-The test bot can continue using the Render test API until a separate test VPS
-or test hostname is introduced.
-
-## 7. Rollback
-
-Keep Render running during the migration window. The fastest infrastructure
-rollback is to restore the old root `A` record or the previous Render DNS
-target.
-
-For an application rollback on the VPS, list retained releases and redeploy a
-previous source tree:
-
-```sh
-ls -1dt /opt/0xda-market/releases/*
-bash /opt/0xda-market/releases/PREVIOUS_SHA/deploy/vps/deploy.sh
-ln -sfn /opt/0xda-market/releases/PREVIOUS_SHA /opt/0xda-market/current
-```
-
-Do not delete the Render service until DNS, HTTPS, API health, bot requests and
-at least one subsequent release deployment have all succeeded.
-
-## 8. Later move to `api.nilx.one`
-
-The deployment is not coupled to the temporary root hostname. To move later:
-
-1. add `api A <VPS_IP>` in Spaceship DNS;
-2. change `DOMAIN=api.nilx.one` and `TELEGRAM_WEBHOOK_BASE_URL` when applicable;
-3. redeploy;
-4. update the bot's `MARKET_API_URL` to `https://api.nilx.one`.
+- Keep `REGISTER_TELEGRAM_WEBHOOK=0` in the bot environment until core and bot
+  health checks are green.
+- Do not activate production until the production Supabase URL, production bot
+  token, webhook secret and API token pairing have been reviewed.
+- Do not run both environments simultaneously; they intentionally share ports
+  `80`, `443` and `127.0.0.1:10001`.
+- Do not retire the previous hosting path until HTTPS, API traffic and bot
+  traffic have passed a subsequent deployment.

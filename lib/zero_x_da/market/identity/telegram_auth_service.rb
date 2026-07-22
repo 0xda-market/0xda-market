@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "securerandom"
-require "set"
 require_relative "../core/contracts"
 require_relative "records"
 
@@ -17,15 +16,11 @@ module ZeroXDA
         def initialize(
           store:,
           clock: -> { Time.now.utc },
-          id_generator: SecureRandom.method(:uuid),
-          bootstrap_admin_ids: []
+          id_generator: SecureRandom.method(:uuid)
         )
           @store = store
           @clock = clock
           @id_generator = id_generator
-          @bootstrap_admin_ids = bootstrap_admin_ids.map do |id|
-            normalize_telegram_id(id)
-          end.to_set.freeze
         end
 
         def authenticate(provider_user_id:, provider_data: {}, role: "client")
@@ -57,7 +52,6 @@ module ZeroXDA
               provider_user_id: actor_provider_user_id
             ) || raise(Core::NotFound.new("telegram_identity", actor_provider_user_id))
             actor = fetch_active_user(store, actor_identity.user_id)
-            actor = promote_bootstrap_admin(store, actor, actor_provider_user_id)
             unless actor.role == "admin"
               raise Core::Forbidden.new(
                 "admin role is required",
@@ -89,7 +83,6 @@ module ZeroXDA
               provider_user_id: provider_user_id
             ) || raise(Core::NotFound.new("telegram_identity", provider_user_id))
             user = fetch_active_user(store, identity.user_id)
-            user = promote_bootstrap_admin(store, user, provider_user_id)
             unless user.role == "admin"
               raise Core::Forbidden.new(
                 "admin role is required",
@@ -128,7 +121,6 @@ module ZeroXDA
             )
           end
 
-          user = promote_bootstrap_admin(store, user, identity.provider_user_id)
           user = assign_role(store, user, role)
 
           now = current_time
@@ -151,7 +143,7 @@ module ZeroXDA
           now = current_time
           user = User.new(
             id: new_id,
-            role: bootstrap_admin?(provider_user_id) ? "admin" : role,
+            role: role,
             status: "active",
             created_at: now
           )
@@ -203,12 +195,6 @@ module ZeroXDA
           user
         end
 
-        def promote_bootstrap_admin(store, user, provider_user_id)
-          return user unless bootstrap_admin?(provider_user_id) && user.role != "admin"
-
-          promote_user(store, user)
-        end
-
         def promote_user(store, user)
           replace_role(store, user, "admin")
         end
@@ -238,10 +224,6 @@ module ZeroXDA
           end
 
           role.freeze
-        end
-
-        def bootstrap_admin?(provider_user_id)
-          @bootstrap_admin_ids.include?(provider_user_id.to_s)
         end
 
         def normalize_telegram_id(value)

@@ -2,6 +2,7 @@
 
 require_relative "test_helper"
 require "rack/mock"
+require "zero_x_da/market/identity/admin_service"
 require "zero_x_da/market/identity/memory_store"
 require "zero_x_da/market/identity/telegram_auth_service"
 require "zero_x_da/market/transport/json_api"
@@ -13,17 +14,18 @@ class TelegramAuthAPITest < Minitest::Test
     clock = MutableClock.new
     provider = TestProvider.new(clock: clock)
     kernel, = build_kernel(provider: provider, clock: clock)
-    identity_service = ZeroXDA::Market::Identity::TelegramAuthService.new(
-      store: ZeroXDA::Market::Identity::MemoryStore.new,
+    store = ZeroXDA::Market::Identity::MemoryStore.new
+    @identity_service = ZeroXDA::Market::Identity::TelegramAuthService.new(
+      store: store,
       clock: clock,
-      id_generator: SequenceIDs.new,
-      bootstrap_admin_ids: [99]
+      id_generator: SequenceIDs.new
     )
+    @admin_service = ZeroXDA::Market::Identity::AdminService.new(store: store, clock: clock)
     @client = Rack::MockRequest.new(
       ZeroXDA::Market::Transport::JSONAPI.new(
         kernel: kernel,
         token: "client-secret",
-        identity_service: identity_service
+        identity_service: @identity_service
       )
     )
   end
@@ -99,11 +101,13 @@ class TelegramAuthAPITest < Minitest::Test
   end
 
   def test_admin_promotes_a_user_and_receives_the_target_chat
-    post_auth(
+    owner = post_auth(
       telegram_user_id: 99,
       chat_id: 990,
       username: "owner"
     )
+    owner_id = JSON.parse(owner.body).dig("data", "id")
+    @admin_service.bootstrap(user_id: owner_id)
     target = post_auth(
       telegram_user_id: 77,
       chat_id: 770,

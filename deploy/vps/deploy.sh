@@ -8,8 +8,33 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
+deploy_mode="${DEPLOY_MODE:-activate}"
+deploy_environment="$(sed -n 's/^DEPLOY_ENV=//p' .env | tail -n 1)"
+
+case "$deploy_mode" in
+  stage|activate) ;;
+  *)
+    echo "Unsupported DEPLOY_MODE: $deploy_mode" >&2
+    exit 1
+    ;;
+esac
+
+case "$deploy_environment" in
+  development|production) ;;
+  *)
+    echo "DEPLOY_ENV must be development or production" >&2
+    exit 1
+    ;;
+esac
+
 docker compose config --quiet
 docker compose build --pull api
+
+if [[ "$deploy_mode" == "stage" ]]; then
+  echo "0xda-market $deploy_environment release staged"
+  exit 0
+fi
+
 docker compose up --detach --remove-orphans
 
 api_container="$(docker compose ps --quiet api)"
@@ -61,4 +86,4 @@ fi
 
 docker image prune --force --filter 'until=168h' >/dev/null
 
-echo "0xda-market VPS deployment is healthy"
+echo "0xda-market $deploy_environment VPS deployment is healthy"

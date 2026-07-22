@@ -26,14 +26,14 @@ install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
 
-cat >/etc/apt/sources.list.d/docker.sources <<EOF
+cat >/etc/apt/sources.list.d/docker.sources <<EOF_DOCKER
 Types: deb
 URIs: https://download.docker.com/linux/ubuntu
 Suites: ${UBUNTU_CODENAME:-$VERSION_CODENAME}
 Components: stable
 Architectures: $(dpkg --print-architecture)
 Signed-By: /etc/apt/keyrings/docker.asc
-EOF
+EOF_DOCKER
 
 apt-get update
 apt-get install --yes docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
@@ -52,9 +52,14 @@ if ! id deploy >/dev/null 2>&1; then
 fi
 usermod --append --groups docker deploy
 
-install -d -m 0755 -o deploy -g deploy /opt/0xda-market
-install -d -m 0750 -o deploy -g deploy /opt/0xda-market/releases
-install -d -m 0750 -o deploy -g deploy /opt/0xda-market/shared
+for root in /opt/0xda-market /opt/0xda-market-bot; do
+  install -d -m 0755 -o deploy -g deploy "$root"
+  for environment in development production; do
+    install -d -m 0750 -o deploy -g deploy "$root/environments/$environment/releases"
+    install -d -m 0750 -o deploy -g deploy "$root/environments/$environment/shared"
+  done
+done
+install -d -m 0750 -o deploy -g deploy /opt/0xda-market-runtime
 install -d -m 0700 -o deploy -g deploy /home/deploy/.ssh
 
 key_path=/root/0xda-market-github-actions
@@ -68,7 +73,7 @@ chown deploy:deploy /home/deploy/.ssh/authorized_keys
 chmod 0600 /home/deploy/.ssh/authorized_keys
 
 # Preserve every configured SSH port, and especially the port used by the
-# current session, before enabling UFW. The deployment workflow connects to
+# current session, before enabling UFW. The deployment workflows connect to
 # port 22022, so keep that firewall rule open even if sshd is not listening on
 # it yet.
 required_deploy_port=22022
@@ -95,33 +100,44 @@ ufw allow 443/udp
 ufw --force enable
 
 if ! sshd -T 2>/dev/null | awk '$1 == "port" { print $2 }' | grep -qx "$required_deploy_port"; then
-  cat >&2 <<EOF
+  cat >&2 <<EOF_WARNING
 WARNING: UFW allows TCP ${required_deploy_port}, but sshd does not currently
 listen on that port. Configure and test SSH on ${required_deploy_port} before
-running the release workflow.
-EOF
+running a deployment workflow.
+EOF_WARNING
 fi
 
-cat <<EOF
+cat <<EOF_SUMMARY
 
 Bootstrap complete.
 
 GitHub Actions private key:
   ${key_path}
 
-Copy its full contents into the production environment secret:
-  VPS_SSH_PRIVATE_KEY
+Use the same key in the development and production GitHub environments for:
+  0xda-market/0xda-market
+  0xda-market/0xda-market-bot
 
-Repository production settings:
+Each repository environment requires:
   secret VPS_HOST=<public VPS IP>
   secret VPS_USER=deploy
-  variable VPS_DEPLOY_PATH=/opt/0xda-market
+  secret VPS_SSH_PRIVATE_KEY=<full private key>
 
-The deployment workflow uses the fixed SSH port:
+Core variable:
+  VPS_DEPLOY_PATH=/opt/0xda-market
+
+Bot variable:
+  VPS_BOT_DEPLOY_PATH=/opt/0xda-market-bot
+
+The workflows use the fixed SSH port:
   22022
 
-Before the first release deployment, create:
-  /opt/0xda-market/shared/.env
+Create four runtime files before deploying:
+  /opt/0xda-market/environments/development/shared/.env
+  /opt/0xda-market/environments/production/shared/.env
+  /opt/0xda-market-bot/environments/development/shared/.env
+  /opt/0xda-market-bot/environments/production/shared/.env
 
-Start from deploy/vps/.env.example and keep VERIFY_PUBLIC_HTTPS=0 until DNS points to this VPS.
-EOF
+Set DEPLOY_ENV to match each directory. Keep production inactive until its
+runtime values, CI and smoke checks have been reviewed.
+EOF_SUMMARY

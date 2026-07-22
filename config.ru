@@ -31,12 +31,11 @@ require_relative "lib/zero_x_da/market/pricing/service"
 require_relative "lib/zero_x_da/market/localization/service"
 
 clock = -> { Time.now.utc }
-environment = ENV.fetch("RACK_ENV", "development")
+environment = ENV.fetch("DEPLOY_ENV", "development")
 public_token = ENV["PUBLIC_API_TOKEN"]
 operator_token = ENV["MANUAL_PROVIDER_TOKEN"]
 database_url = ENV["DATABASE_URL"]
 telegram_configuration = ZeroXDA::Market::Telegram::Configuration.from_env(ENV)
-admin_telegram_ids = ENV.fetch("ADMIN_TELEGRAM_IDS", "").split(",").map(&:strip)
 
 if environment == "production"
   required_secrets = {
@@ -107,8 +106,7 @@ kernel = ZeroXDA::Market::Core::Kernel.new(
 
 identity_service = ZeroXDA::Market::Identity::TelegramAuthService.new(
   store: identity_store,
-  clock: clock,
-  bootstrap_admin_ids: admin_telegram_ids
+  clock: clock
 )
 public_api = ZeroXDA::Market::Transport::JSONAPI.new(
   kernel: kernel,

@@ -25,8 +25,7 @@ FROM ruby:3.3.11-slim AS runtime
 ENV BUNDLE_DEPLOYMENT=1 \
     BUNDLE_PATH=/usr/local/bundle \
     BUNDLE_WITHOUT=development:test \
-    PORT=10000 \
-    RACK_ENV=production
+    PORT=10000
 
 WORKDIR /app
 

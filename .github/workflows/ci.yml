@@ -11,6 +11,31 @@ permissions:
   contents: read
 
 jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3.11"
+          bundler-cache: true
+      - name: Run unit tests
+        id: unit_tests
+        run: |
+          set -o pipefail
+          bundle exec rake >unit-test.log 2>&1 || {
+            cat unit-test.log
+            exit 1
+          }
+      - name: Upload unit failure log
+        if: failure() && steps.unit_tests.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-log
+          path: unit-test.log
+          retention-days: 3
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -35,7 +60,28 @@ jobs:
         with:
           ruby-version: "3.3.11"
           bundler-cache: true
-      - run: bundle exec rake
+      - name: Run integration tests
+        id: integration_tests
+        run: |
+          set -o pipefail
+          bundle exec rake >integration-test.log 2>&1 || {
+            cat integration-test.log
+            exit 1
+          }
+      - name: Upload integration failure log
+        if: failure() && steps.integration_tests.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-log
+          path: integration-test.log
+          retention-days: 3
+      - name: Validate operational scripts
+        run: |
+          ruby -c bin/bootstrap_admin
+          bash -n deploy/vps/bootstrap-ubuntu.sh
+          bash -n deploy/vps/deploy.sh
+          bash -n deploy/vps/switch-environment.sh
+          bash test/vps_switch_test.sh
 
   docker:
     runs-on: ubuntu-latest

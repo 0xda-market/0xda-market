@@ -1,4 +1,4 @@
-name: zero-x-da-market
+name: zero-x-da-market-${DEPLOY_ENV}
 
 services:
   api:
@@ -53,4 +53,6 @@ networks:
 
 volumes:
   caddy_data:
+    name: zero-x-da-market-caddy-data
   caddy_config:
+    name: zero-x-da-market-caddy-config

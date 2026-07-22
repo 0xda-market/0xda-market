@@ -6,7 +6,7 @@ require "rack/mock"
 class RuntimeTest < Minitest::Test
   def test_starts_in_health_only_mode_without_an_operator_token
     with_environment(
-      "RACK_ENV" => nil,
+      "DEPLOY_ENV" => nil,
       "PUBLIC_API_TOKEN" => nil,
       "MANUAL_PROVIDER_TOKEN" => nil,
       "DATABASE_URL" => nil,
@@ -31,7 +31,7 @@ class RuntimeTest < Minitest::Test
 
   def test_mounts_manual_provider_when_an_operator_token_is_configured
     with_environment(
-      "RACK_ENV" => "development",
+      "DEPLOY_ENV" => "development",
       "PUBLIC_API_TOKEN" => "client-secret",
       "MANUAL_PROVIDER_TOKEN" => "operator-secret",
       "DATABASE_URL" => nil,
@@ -72,7 +72,7 @@ class RuntimeTest < Minitest::Test
 
   def test_mounts_both_telegram_webhooks_when_the_bots_are_configured
     with_environment(
-      "RACK_ENV" => "development",
+      "DEPLOY_ENV" => "development",
       "PUBLIC_API_TOKEN" => "client-secret",
       "MANUAL_PROVIDER_TOKEN" => "operator-secret",
       "DATABASE_URL" => nil,
@@ -90,7 +90,7 @@ class RuntimeTest < Minitest::Test
 
   def test_rejects_production_boot_with_missing_secrets
     with_environment(
-      "RACK_ENV" => "production",
+      "DEPLOY_ENV" => "production",
       "PUBLIC_API_TOKEN" => nil,
       "MANUAL_PROVIDER_TOKEN" => nil,
       "DATABASE_URL" => nil,

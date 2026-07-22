@@ -1,0 +1,77 @@
+name: Switch VPS Environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Environment to activate on the VPS
+        required: true
+        type: choice
+        options:
+          - development
+          - production
+      confirm_production:
+        description: Confirm the production cutover
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vps-environment-switch
+  cancel-in-progress: false
+
+jobs:
+  switch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: ${{ inputs.target_environment }}
+    env:
+      TARGET_ENV: ${{ inputs.target_environment }}
+      CONFIRM_PRODUCTION: ${{ inputs.confirm_production && '1' || '0' }}
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_PORT: 22022
+      CORE_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH || '/opt/0xda-market' }}
+      BOT_DEPLOY_PATH: /opt/0xda-market-bot
+      VPS_RUNTIME_PATH: /opt/0xda-market-runtime
+
+    steps:
+      - name: Validate switch request
+        run: |
+          set -Eeuo pipefail
+          case "$TARGET_ENV" in development|production) ;; *) exit 1 ;; esac
+          if [[ "$TARGET_ENV" == "production" && "$CONFIRM_PRODUCTION" != "1" ]]; then
+            echo "Production cutover was not confirmed" >&2
+            exit 1
+          fi
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          test -n "$VPS_SSH_PRIVATE_KEY"
+
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          set -Eeuo pipefail
+          install -m 0700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" >"$HOME/.ssh/id_ed25519"
+          chmod 0600 "$HOME/.ssh/id_ed25519"
+          ssh-keyscan -p "$VPS_PORT" -H "$VPS_HOST" >>"$HOME/.ssh/known_hosts"
+
+      - name: Upload switch controller
+        run: |
+          set -Eeuo pipefail
+          scp -P "$VPS_PORT" \
+            deploy/vps/switch-environment.sh \
+            "$VPS_USER@$VPS_HOST:/tmp/0xda-market-switch-environment.sh"
+
+      - name: Activate selected environment
+        run: |
+          set -Eeuo pipefail
+          ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+            "CORE_DEPLOY_PATH='$CORE_DEPLOY_PATH' BOT_DEPLOY_PATH='$BOT_DEPLOY_PATH' VPS_RUNTIME_PATH='$VPS_RUNTIME_PATH' CONFIRM_PRODUCTION='$CONFIRM_PRODUCTION' bash /tmp/0xda-market-switch-environment.sh '$TARGET_ENV'"

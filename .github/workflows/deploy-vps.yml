@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: production-vps
+  group: vps-api-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: false
 
 jobs:
@@ -19,26 +19,30 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
-      startsWith(github.event.workflow_run.head_branch, 'release')
+      (github.event.workflow_run.head_branch == 'master' ||
+       startsWith(github.event.workflow_run.head_branch, 'release'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: production
+    environment:
+      name: ${{ github.event.workflow_run.head_branch == 'master' && 'development' || 'production' }}
     env:
+      DEPLOY_ENV: ${{ github.event.workflow_run.head_branch == 'master' && 'development' || 'production' }}
       VPS_HOST: ${{ secrets.VPS_HOST }}
       VPS_USER: ${{ secrets.VPS_USER }}
       VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
       VPS_PORT: 22022
       VPS_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH || '/opt/0xda-market' }}
+      VPS_RUNTIME_PATH: /opt/0xda-market-runtime
       RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
 
     steps:
       - name: Validate deployment configuration
         run: |
           set -Eeuo pipefail
+          case "$DEPLOY_ENV" in development|production) ;; *) exit 1 ;; esac
           test -n "$VPS_HOST"
           test -n "$VPS_USER"
           test -n "$VPS_SSH_PRIVATE_KEY"
-          test -n "$VPS_PORT"
           test -n "$VPS_DEPLOY_PATH"
           test -n "$RELEASE_SHA"
 
@@ -57,37 +61,52 @@ jobs:
       - name: Upload release
         run: |
           set -Eeuo pipefail
-          archive="/tmp/0xda-market-${RELEASE_SHA}.tar.gz"
+          archive="/tmp/0xda-market-${DEPLOY_ENV}-${RELEASE_SHA}.tar.gz"
           tar --exclude=.git --exclude='deploy/vps/.env' -czf "$archive" .
           scp -P "$VPS_PORT" "$archive" "$VPS_USER@$VPS_HOST:/tmp/"
 
-      - name: Activate release
+      - name: Stage or refresh environment
         run: |
           set -Eeuo pipefail
           ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-            "DEPLOY_PATH='$VPS_DEPLOY_PATH' RELEASE_SHA='$RELEASE_SHA' bash -s" <<'REMOTE'
+            "DEPLOY_PATH='$VPS_DEPLOY_PATH' RUNTIME_PATH='$VPS_RUNTIME_PATH' DEPLOY_ENV='$DEPLOY_ENV' RELEASE_SHA='$RELEASE_SHA' bash -s" <<'REMOTE'
           set -Eeuo pipefail
 
-          archive="/tmp/0xda-market-${RELEASE_SHA}.tar.gz"
-          release_dir="$DEPLOY_PATH/releases/$RELEASE_SHA"
+          environment_root="$DEPLOY_PATH/environments/$DEPLOY_ENV"
+          archive="/tmp/0xda-market-${DEPLOY_ENV}-${RELEASE_SHA}.tar.gz"
+          release_dir="$environment_root/releases/$RELEASE_SHA"
+          shared_env="$environment_root/shared/.env"
+          current_link="$environment_root/current"
+          active_environment=""
+          previous_release="$(readlink -f "$current_link" 2>/dev/null || true)"
 
-          test -f "$DEPLOY_PATH/shared/.env"
+          test -f "$shared_env"
+          grep -qx "DEPLOY_ENV=$DEPLOY_ENV" "$shared_env"
+
           rm -rf "$release_dir"
           mkdir -p "$release_dir"
           tar -xzf "$archive" -C "$release_dir"
           rm -f "$archive"
+          ln -sfn "$shared_env" "$release_dir/deploy/vps/.env"
 
-          ln -sfn "$DEPLOY_PATH/shared/.env" "$release_dir/deploy/vps/.env"
-          bash "$release_dir/deploy/vps/deploy.sh"
-          ln -sfn "$release_dir" "$DEPLOY_PATH/current"
+          if [[ -f "$RUNTIME_PATH/active-environment" ]]; then
+            active_environment="$(<"$RUNTIME_PATH/active-environment")"
+          fi
 
-          find "$DEPLOY_PATH/releases" \
-            -mindepth 1 \
-            -maxdepth 1 \
-            -type d \
-            -printf '%T@ %p\n' \
-            | sort -nr \
-            | tail -n +4 \
-            | cut -d' ' -f2- \
-            | xargs -r rm -rf
+          if [[ "$active_environment" == "$DEPLOY_ENV" ]]; then
+            if ! DEPLOY_MODE=activate bash "$release_dir/deploy/vps/deploy.sh"; then
+              if [[ -n "$previous_release" && -d "$previous_release/deploy/vps" ]]; then
+                DEPLOY_MODE=activate bash "$previous_release/deploy/vps/deploy.sh" || true
+              fi
+              exit 1
+            fi
+          else
+            DEPLOY_MODE=stage bash "$release_dir/deploy/vps/deploy.sh"
+          fi
+
+          ln -sfn "$release_dir" "$current_link"
+
+          find "$environment_root/releases" \
+            -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' \
+            | sort -nr | tail -n +4 | cut -d' ' -f2- | xargs -r rm -rf
           REMOTE

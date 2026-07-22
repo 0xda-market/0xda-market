@@ -1,0 +1,36 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "bundler/setup"
+require_relative "../lib/zero_x_da/market/adapters/postgres_database"
+require_relative "../lib/zero_x_da/market/identity/admin_service"
+require_relative "../lib/zero_x_da/market/identity/postgres_store"
+
+user_id = ARGV.first
+if user_id.nil? || user_id.empty?
+  warn "Usage: bundle exec ruby bin/bootstrap_admin USER_ID"
+  exit 64
+end
+
+database_url = ENV["DATABASE_URL"]
+if database_url.nil? || database_url.empty?
+  warn "DATABASE_URL is required"
+  exit 78
+end
+
+database = ZeroXDA::Market::Adapters::PostgresDatabase.new(
+  url: database_url,
+  max_connections: 1
+)
+
+begin
+  store = ZeroXDA::Market::Identity::PostgresStore.new(database: database)
+  service = ZeroXDA::Market::Identity::AdminService.new(store: store)
+  result = service.bootstrap(user_id: user_id)
+
+  puts "admin bootstrap complete"
+  puts "user_id=#{result.user.id}"
+  puts "changed=#{result.changed}"
+ensure
+  database.disconnect
+end
