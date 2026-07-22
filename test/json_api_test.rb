@@ -106,10 +106,9 @@ class JSONAPITest < Minitest::Test
     identity_service = ZeroXDA::Market::Identity::TelegramAuthService.new(
       store: ZeroXDA::Market::Identity::MemoryStore.new,
       clock: clock,
-      id_generator: SequenceIDs.new,
-      bootstrap_admin_ids: [99]
+      id_generator: SequenceIDs.new
     )
-    admin = identity_service.authenticate(provider_user_id: 99)
+    admin = identity_service.bootstrap_admin(provider_user_id: 99)
     product = ZeroXDA::Market::Catalog::Product.new(
       sku: "premium_3m",
       short_name: "Premium 3m",
