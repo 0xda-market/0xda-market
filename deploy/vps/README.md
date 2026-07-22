@@ -120,19 +120,25 @@ chmod 0600 /opt/0xda-market/environments/*/shared/.env
 Administrator roles are persisted in Supabase. There is no
 `ADMIN_TELEGRAM_IDS` runtime variable and the bot is not a source of role data.
 
+The user must authenticate once so core creates a row in `market.users`. Obtain
+the internal UUID from the authenticated API resource (`data.id`) or the
+protected `/v1/users?status=active` response. Do not use a Telegram ID,
+username, chat ID, or another provider identifier for bootstrap.
+
 After the selected core environment is active and migrations have completed,
-create or promote the first administrator once:
+promote the existing internal user once:
 
 ```sh
 cd /opt/0xda-market/environments/development/current/deploy/vps
 docker compose exec -T api \
-  bundle exec ruby bin/bootstrap_admin TELEGRAM_USER_ID
+  bundle exec ruby bin/bootstrap_admin USER_ID
 ```
 
 Use the matching production path only after the production environment is
 reviewed and active. The command is idempotent: rerunning it keeps the same
-identity and persisted `admin` role. Subsequent administrator assignments use
-the normal admin-only application flow.
+persisted `admin` role. An unknown internal user ID fails without creating a
+user or external identity. Subsequent administrator assignments use the normal
+admin-only application flow.
 
 ## Deployment behavior
 
