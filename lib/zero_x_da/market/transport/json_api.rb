@@ -22,6 +22,7 @@ module ZeroXDA
           token: nil,
           readiness: -> { true },
           identity_service: nil,
+          admin_service: nil,
           catalog: nil,
           pricing: nil,
           localization: nil
@@ -30,6 +31,7 @@ module ZeroXDA
           @authentication = token && BearerAuth.new(token: token)
           @readiness = readiness
           @identity_service = identity_service
+          @admin_service = admin_service
           @catalog = catalog
           @pricing = pricing
           @localization = localization
@@ -94,11 +96,12 @@ module ZeroXDA
             )
           end
 
-          if method == "POST" && path == "/v1/auth/telegram" && @identity_service
+          if method == "POST" && path == "/v1/auth/external" && @identity_service
             body = request_document(request)
             authentication = @identity_service.authenticate(
-              provider_user_id: body.fetch("telegram_user_id"),
-              provider_data: telegram_provider_data(body)
+              provider: body.fetch("provider"),
+              provider_user_id: body.fetch("provider_user_id"),
+              provider_data: body.fetch("provider_data", {})
             )
             status = authentication.created ? 201 : 200
             return resource_response(status, present_authentication(authentication))
@@ -145,10 +148,8 @@ module ZeroXDA
             )
           end
 
-          if method == "GET" && path == "/v1/admin/prices/proposal" && @pricing && @identity_service
-            @identity_service.require_admin(
-              provider_user_id: request.params["actor_telegram_user_id"]
-            )
+          if method == "GET" && path == "/v1/admin/prices/proposal" && @pricing && @admin_service
+            @admin_service.require_admin(user_id: request.params["actor_user_id"])
             locale = requested_locale(request)
             entries = @pricing.proposal(locale: locale)
             return json_response(
@@ -164,10 +165,9 @@ module ZeroXDA
             )
           end
 
-          if method == "POST" && path == "/v1/admin/prices" && @pricing && @identity_service
+          if method == "POST" && path == "/v1/admin/prices" && @pricing && @admin_service
             body = request_document(request)
-            actor = body.fetch("actor_telegram_user_id")
-            actor_user = @identity_service.require_admin(provider_user_id: actor)
+            actor_user = @admin_service.require_admin(user_id: body.fetch("actor_user_id"))
             entries = body.fetch("prices")
             raise ArgumentError, "prices must be a non-empty array" unless entries.is_a?(Array)
 
@@ -194,17 +194,17 @@ module ZeroXDA
             return json_response(
               200,
               {
-                "data" => users.map { |entry| present_user_identity(entry) },
+                "data" => users.map { |profile| present_user_profile(profile) },
                 "meta" => { "count" => users.length }
               }
             )
           end
 
-          if method == "POST" && path == "/v1/admin/users/set-admin" && @identity_service
+          if method == "POST" && path == "/v1/admin/users/set-admin" && @admin_service
             body = request_document(request)
-            assignment = @identity_service.set_admin(
-              actor_provider_user_id: body.fetch("actor_telegram_user_id"),
-              target: body.fetch("target")
+            assignment = @admin_service.assign_admin(
+              actor_user_id: body.fetch("actor_user_id"),
+              target_user_id: body.fetch("target_user_id")
             )
             return resource_response(200, present_role_assignment(assignment))
           end
@@ -280,8 +280,6 @@ module ZeroXDA
           request_document(request)
         end
 
-        # The requested display currency. Falls back to the base currency when
-        # the parameter is absent or localization is not wired.
         def requested_currency(request)
           value = request.params["currency"].to_s.strip.upcase
           return Localization::Service::BASE_CURRENCY if value.empty? || @localization.nil?
@@ -314,7 +312,6 @@ module ZeroXDA
 
         def present_authentication(authentication)
           user = authentication.user
-          identity = authentication.identity
           {
             "type" => "user",
             "id" => user.id,
@@ -323,33 +320,30 @@ module ZeroXDA
               "status" => user.status,
               "created_at" => timestamp(user.created_at),
               "updated_at" => timestamp(user.updated_at),
-              "identity" => {
-                "provider" => identity.provider,
-                "provider_user_id" => identity.provider_user_id,
-                "provider_data" => identity.provider_data,
-                "last_authenticated_at" => timestamp(identity.last_authenticated_at)
-              }
+              "identity" => present_identity(authentication.identity)
             },
             "meta" => { "created" => authentication.created }
           }
         end
 
-        def present_user_identity(entry)
+        def present_user_profile(profile)
           {
             "type" => "user",
-            "id" => entry.user.id,
+            "id" => profile.user.id,
             "attributes" => {
-              "telegram_user_id" => entry.identity.provider_user_id,
-              "role" => entry.user.role,
-              "status" => entry.user.status,
-              "locale" => if @localization
-                              @localization.locale_for(
-                                entry.identity.provider_data["language_code"]
-                              )
-                            else
-                              Localization::Service::DEFAULT_LOCALE
-                            end
+              "role" => profile.user.role,
+              "status" => profile.user.status,
+              "identities" => profile.identities.map { |identity| present_identity(identity) }
             }
+          }
+        end
+
+        def present_identity(identity)
+          {
+            "provider" => identity.provider,
+            "provider_user_id" => identity.provider_user_id,
+            "provider_data" => identity.provider_data,
+            "last_authenticated_at" => timestamp(identity.last_authenticated_at)
           }
         end
 
@@ -372,8 +366,6 @@ module ZeroXDA
           }
         end
 
-        # Currencies share the product shape plus their current rate: USDT
-        # paid per 1 unit, taken from the same price history as any product.
         def present_currency(currency)
           resource = present_product(currency)
           resource["type"] = "currency"
@@ -439,8 +431,6 @@ module ZeroXDA
             "type" => "user",
             "id" => assignment.user.id,
             "attributes" => {
-              "telegram_user_id" => assignment.identity.provider_user_id,
-              "telegram_chat_id" => assignment.identity.provider_data["chat_id"],
               "role" => assignment.user.role,
               "status" => assignment.user.status
             },
@@ -449,33 +439,6 @@ module ZeroXDA
               "assigned_by" => assignment.actor.id
             }
           }
-        end
-
-        def telegram_provider_data(body)
-          {
-            "chat_id" => external_identifier(body.fetch("chat_id"), "chat_id"),
-            "username" => optional_string(body["username"], "username"),
-            "first_name" => optional_string(body["first_name"], "first_name"),
-            "last_name" => optional_string(body["last_name"], "last_name"),
-            "language_code" => optional_string(body["language_code"], "language_code")
-          }.compact
-        end
-
-        def external_identifier(value, field)
-          string = value.to_s
-          raise ArgumentError, "#{field} must not be empty" if string.empty?
-          raise ArgumentError, "#{field} is too long" if string.bytesize > 128
-
-          string
-        end
-
-        def optional_string(value, field)
-          return nil if value.nil?
-
-          string = value.to_s
-          raise ArgumentError, "#{field} is too long" if string.bytesize > 256
-
-          string.empty? ? nil : string
         end
 
         def present_quote(quote)
