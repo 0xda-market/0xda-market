@@ -27,7 +27,7 @@ jobs:
       VPS_HOST: ${{ secrets.VPS_HOST }}
       VPS_USER: ${{ secrets.VPS_USER }}
       VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
-      VPS_PORT: ${{ vars.VPS_PORT || '22' }}
+      VPS_PORT: 22022
       VPS_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH || '/opt/0xda-market' }}
       RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
 
