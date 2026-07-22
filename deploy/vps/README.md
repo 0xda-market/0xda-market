@@ -115,6 +115,25 @@ chown deploy:deploy /opt/0xda-market/environments/*/shared/.env
 chmod 0600 /opt/0xda-market/environments/*/shared/.env
 ```
 
+## Administrator bootstrap
+
+Administrator roles are persisted in Supabase. There is no
+`ADMIN_TELEGRAM_IDS` runtime variable and the bot is not a source of role data.
+
+After the selected core environment is active and migrations have completed,
+create or promote the first administrator once:
+
+```sh
+cd /opt/0xda-market/environments/development/current/deploy/vps
+docker compose exec -T api \
+  bundle exec ruby bin/bootstrap_admin TELEGRAM_USER_ID
+```
+
+Use the matching production path only after the production environment is
+reviewed and active. The command is idempotent: rerunning it keeps the same
+identity and persisted `admin` role. Subsequent administrator assignments use
+the normal admin-only application flow.
+
 ## Deployment behavior
 
 After green `CI`:
