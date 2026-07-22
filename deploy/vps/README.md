@@ -13,8 +13,8 @@ but only one complete core + bot stack may be running at a time.
 | `development` | `master` | `@zeroxda_market_test_bot` | test |
 | `production` | `release*` | `@zeroxda_market_bot` | production |
 
-`RACK_ENV=production` is used in both environments because both run as managed
-server processes. `DEPLOY_ENV` identifies the business/deployment environment.
+`DEPLOY_ENV` is the only runtime environment marker. It must match the GitHub
+Environment and the VPS directory containing the runtime file.
 
 ## VPS layout
 
@@ -98,7 +98,6 @@ Start from `deploy/vps/.env.example`. The values must be independent:
 ```env
 DEPLOY_ENV=development
 DOMAIN=0xda-market.nilx.one
-RACK_ENV=production
 DATABASE_URL=<development Supabase URL>
 PUBLIC_API_TOKEN=<development token>
 MANUAL_PROVIDER_TOKEN=<development token>
