@@ -7,7 +7,7 @@ require "zero_x_da/market/catalog/product"
 require "zero_x_da/market/catalog/service"
 require "zero_x_da/market/identity/admin_service"
 require "zero_x_da/market/identity/memory_store"
-require "zero_x_da/market/identity/telegram_auth_service"
+require "zero_x_da/market/identity/service"
 require "zero_x_da/market/pricing/memory_store"
 require "zero_x_da/market/pricing/service"
 require "zero_x_da/market/transport/json_api"
@@ -105,12 +105,15 @@ class JSONAPITest < Minitest::Test
   def test_price_application_records_the_internal_admin_user_id
     clock = MutableClock.new
     store = ZeroXDA::Market::Identity::MemoryStore.new
-    identity_service = ZeroXDA::Market::Identity::TelegramAuthService.new(
+    identity_service = ZeroXDA::Market::Identity::Service.new(
       store: store,
       clock: clock,
       id_generator: SequenceIDs.new
     )
-    authentication = identity_service.authenticate(provider_user_id: 99)
+    authentication = identity_service.authenticate(
+      provider: "telegram",
+      provider_user_id: 99
+    )
     admin_service = ZeroXDA::Market::Identity::AdminService.new(store: store, clock: clock)
     admin = admin_service.bootstrap(user_id: authentication.user.id)
     product = ZeroXDA::Market::Catalog::Product.new(
@@ -133,6 +136,7 @@ class JSONAPITest < Minitest::Test
       ZeroXDA::Market::Transport::JSONAPI.new(
         kernel: @kernel,
         identity_service: identity_service,
+        admin_service: admin_service,
         catalog: catalog,
         pricing: pricing
       )
@@ -141,7 +145,7 @@ class JSONAPITest < Minitest::Test
     response = post_json_with(
       client,
       "/v1/admin/prices",
-      actor_telegram_user_id: 99,
+      actor_user_id: admin.user.id,
       prices: [{ sku: "premium_3m", amount_usdt: "12.50" }]
     )
 

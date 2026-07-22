@@ -9,10 +9,7 @@ class RuntimeTest < Minitest::Test
       "DEPLOY_ENV" => nil,
       "PUBLIC_API_TOKEN" => nil,
       "MANUAL_PROVIDER_TOKEN" => nil,
-      "DATABASE_URL" => nil,
-      "TELEGRAM_CLIENT_BOT_TOKEN" => nil,
-      "TELEGRAM_BROKER_BOT_TOKEN" => nil,
-      "TELEGRAM_WEBHOOK_BASE_URL" => nil
+      "DATABASE_URL" => nil
     ) do
       app = Rack::Builder.parse_file(File.expand_path("../config.ru", __dir__))
 
@@ -34,10 +31,7 @@ class RuntimeTest < Minitest::Test
       "DEPLOY_ENV" => "development",
       "PUBLIC_API_TOKEN" => "client-secret",
       "MANUAL_PROVIDER_TOKEN" => "operator-secret",
-      "DATABASE_URL" => nil,
-      "TELEGRAM_CLIENT_BOT_TOKEN" => nil,
-      "TELEGRAM_BROKER_BOT_TOKEN" => nil,
-      "TELEGRAM_WEBHOOK_BASE_URL" => nil
+      "DATABASE_URL" => nil
     ) do
       app = Rack::Builder.parse_file(File.expand_path("../config.ru", __dir__))
 
@@ -51,8 +45,12 @@ class RuntimeTest < Minitest::Test
 
       authentication = post_json(
         app,
-        "/v1/auth/telegram",
-        { telegram_user_id: 77, chat_id: 77, username: "zero" },
+        "/v1/auth/external",
+        {
+          provider: "telegram",
+          provider_user_id: 77,
+          provider_data: { chat_id: "77", username: "zero" }
+        },
         authorization: "Bearer client-secret"
       )
       assert_equal 201, authentication.status
@@ -70,21 +68,19 @@ class RuntimeTest < Minitest::Test
     end
   end
 
-  def test_mounts_both_telegram_webhooks_when_the_bots_are_configured
+  def test_does_not_mount_provider_specific_webhooks
     with_environment(
       "DEPLOY_ENV" => "development",
       "PUBLIC_API_TOKEN" => "client-secret",
       "MANUAL_PROVIDER_TOKEN" => "operator-secret",
-      "DATABASE_URL" => nil,
-      "TELEGRAM_CLIENT_BOT_TOKEN" => "client-bot-token",
-      "TELEGRAM_BROKER_BOT_TOKEN" => "broker-bot-token",
-      "TELEGRAM_WEBHOOK_BASE_URL" => "https://example.test"
+      "DATABASE_URL" => nil
     ) do
       app = Rack::Builder.parse_file(File.expand_path("../config.ru", __dir__))
       client = Rack::MockRequest.new(app)
+      headers = { "HTTP_AUTHORIZATION" => "Bearer client-secret" }
 
-      assert_equal 405, client.get("/telegram/client").status
-      assert_equal 405, client.get("/telegram/broker").status
+      assert_equal 404, client.get("/telegram/client", headers).status
+      assert_equal 404, client.get("/telegram/broker", headers).status
     end
   end
 
@@ -93,10 +89,7 @@ class RuntimeTest < Minitest::Test
       "DEPLOY_ENV" => "production",
       "PUBLIC_API_TOKEN" => nil,
       "MANUAL_PROVIDER_TOKEN" => nil,
-      "DATABASE_URL" => nil,
-      "TELEGRAM_CLIENT_BOT_TOKEN" => nil,
-      "TELEGRAM_BROKER_BOT_TOKEN" => nil,
-      "TELEGRAM_WEBHOOK_BASE_URL" => nil
+      "DATABASE_URL" => nil
     ) do
       error = assert_raises(RuntimeError) do
         Rack::Builder.parse_file(File.expand_path("../config.ru", __dir__))
@@ -105,9 +98,6 @@ class RuntimeTest < Minitest::Test
       assert_includes error.message, "PUBLIC_API_TOKEN"
       assert_includes error.message, "MANUAL_PROVIDER_TOKEN"
       assert_includes error.message, "DATABASE_URL"
-      refute_includes error.message, "TELEGRAM_CLIENT_BOT_TOKEN"
-      refute_includes error.message, "TELEGRAM_BROKER_BOT_TOKEN"
-      refute_includes error.message, "TELEGRAM_WEBHOOK_BASE_URL"
     end
   end
 

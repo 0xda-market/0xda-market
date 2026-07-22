@@ -3,7 +3,7 @@
 require "json"
 require "rack"
 require "time"
-require_relative "../providers/manual_provider"
+require_relative "../core/contracts"
 require_relative "bearer_auth"
 
 module ZeroXDA
@@ -15,9 +15,10 @@ module ZeroXDA
           "content-type" => "application/json; charset=utf-8",
           "cache-control" => "no-store"
         }.freeze
+        REQUIRED_TASK_METHODS = %i[tasks fetch_task complete_task claim_task reject_task].freeze
 
         def initialize(provider:, token:, identity_service: nil, catalog: nil)
-          @provider = provider
+          @provider = validate_task_service!(provider)
           @authentication = BearerAuth.new(token: token)
           @identity_service = identity_service
           @catalog = catalog
@@ -76,11 +77,12 @@ module ZeroXDA
             )
           end
 
-          if method == "POST" && path == "/v1/auth/telegram" && @identity_service
+          if method == "POST" && path == "/v1/auth/external" && @identity_service
             body = request_document(request)
             authentication = @identity_service.authenticate(
-              provider_user_id: body.fetch("telegram_user_id"),
-              provider_data: telegram_provider_data(body),
+              provider: body.fetch("provider"),
+              provider_user_id: body.fetch("provider_user_id"),
+              provider_data: body.fetch("provider_data", {}),
               role: "broker"
             )
             status = authentication.created ? 201 : 200
@@ -128,6 +130,13 @@ module ZeroXDA
           end
 
           error_response(404, "route_not_found", "route was not found")
+        end
+
+        def validate_task_service!(service)
+          missing = REQUIRED_TASK_METHODS.reject { |method_name| service.respond_to?(method_name) }
+          return service if missing.empty?
+
+          raise ArgumentError, "task service is missing methods: #{missing.join(", ")}"
         end
 
         def request_document(request)
@@ -198,33 +207,6 @@ module ZeroXDA
               "position" => product.position
             }
           }
-        end
-
-        def telegram_provider_data(body)
-          {
-            "chat_id" => external_identifier(body.fetch("chat_id"), "chat_id"),
-            "username" => optional_string(body["username"], "username"),
-            "first_name" => optional_string(body["first_name"], "first_name"),
-            "last_name" => optional_string(body["last_name"], "last_name"),
-            "language_code" => optional_string(body["language_code"], "language_code")
-          }.compact
-        end
-
-        def external_identifier(value, field)
-          string = value.to_s
-          raise ArgumentError, "#{field} must not be empty" if string.empty?
-          raise ArgumentError, "#{field} is too long" if string.bytesize > 128
-
-          string
-        end
-
-        def optional_string(value, field)
-          return nil if value.nil?
-
-          string = value.to_s
-          raise ArgumentError, "#{field} is too long" if string.bytesize > 256
-
-          string.empty? ? nil : string
         end
 
         def timestamp(value)

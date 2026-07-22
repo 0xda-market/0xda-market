@@ -31,25 +31,18 @@ module ZeroXDA
           row && deserialize_identity(row)
         end
 
-        def find_identity_by_username(provider:, username:)
-          row = @identities.where(provider: provider).all.find do |identity|
-            data = document(identity.fetch(:provider_data))
-            data["username"].to_s.casecmp?(username.to_s)
-          end
-          row && deserialize_identity(row)
+        def identities_for_user(user_id)
+          @identities.where(user_id: user_id.to_s)
+                     .order(:provider, :created_at)
+                     .all
+                     .map { |row| deserialize_identity(row) }
         end
 
         def list_users(status:)
-          @users.where(status: status).order(:created_at).all.filter_map do |row|
-            identity_row = @identities.where(
-              user_id: row.fetch(:id),
-              provider: "telegram"
-            ).first
-            next unless identity_row
-
-            UserIdentity.new(
+          @users.where(status: status).order(:created_at).all.map do |row|
+            UserProfile.new(
               user: deserialize_user(row),
-              identity: deserialize_identity(identity_row)
+              identities: identities_for_user(row.fetch(:id)).freeze
             )
           end
         end

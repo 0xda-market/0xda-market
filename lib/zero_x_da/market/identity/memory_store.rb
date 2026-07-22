@@ -2,6 +2,7 @@
 
 require "monitor"
 require_relative "../core/contracts"
+require_relative "records"
 
 module ZeroXDA
   module Market
@@ -43,12 +44,11 @@ module ZeroXDA
           end
         end
 
-        def find_identity_by_username(provider:, username:)
+        def identities_for_user(user_id)
           @monitor.synchronize do
-            @identities.values.find do |identity|
-              identity.provider == provider &&
-                identity.provider_data["username"].to_s.casecmp?(username.to_s)
-            end
+            @identities.values
+                       .select { |identity| identity.user_id == user_id.to_s }
+                       .sort_by { |identity| [identity.provider, identity.created_at] }
           end
         end
 
@@ -57,11 +57,11 @@ module ZeroXDA
             @users.values
                   .select { |user| user.status == status }
                   .sort_by(&:created_at)
-                  .filter_map do |user|
-              identity = @identities.values.find do |item|
-                item.user_id == user.id && item.provider == "telegram"
-              end
-              UserIdentity.new(user: user, identity: identity) if identity
+                  .map do |user|
+              UserProfile.new(
+                user: user,
+                identities: identities_for_user(user.id).freeze
+              )
             end
           end
         end
