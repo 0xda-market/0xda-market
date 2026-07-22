@@ -31,7 +31,7 @@ require_relative "lib/zero_x_da/market/pricing/service"
 require_relative "lib/zero_x_da/market/localization/service"
 
 clock = -> { Time.now.utc }
-environment = ENV.fetch("RACK_ENV", "development")
+environment = ENV.fetch("DEPLOY_ENV", "development")
 public_token = ENV["PUBLIC_API_TOKEN"]
 operator_token = ENV["MANUAL_PROVIDER_TOKEN"]
 database_url = ENV["DATABASE_URL"]
