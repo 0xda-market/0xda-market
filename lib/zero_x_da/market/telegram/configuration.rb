@@ -18,7 +18,8 @@ module ZeroXDA
 
         def self.from_env(environment = ENV)
           values = ENVIRONMENT_KEYS.transform_values { |key| environment[key] }
-          return nil if values.values.all? { |value| value.nil? || value.empty? }
+          tokens = values.values_at(:client_token, :broker_token)
+          return nil if tokens.all? { |value| value.nil? || value.empty? }
 
           missing = values.filter_map do |name, value|
             ENVIRONMENT_KEYS.fetch(name) if value.nil? || value.empty?
