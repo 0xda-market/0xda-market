@@ -1,0 +1,197 @@
+name: Deploy mcp-control to VPS
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/deploy-mcp-control.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-control-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: development
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_PORT: 22022
+
+    steps:
+      - name: Validate deployment configuration
+        run: |
+          set -Eeuo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          test -n "$VPS_SSH_PRIVATE_KEY"
+
+      - name: Check out mcp-control
+        uses: actions/checkout@v4
+        with:
+          repository: 0x0sky/mcp-control
+          ref: master
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Validate and build
+        run: |
+          set -Eeuo pipefail
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -count=1 ./...
+          make single
+
+          source_sha="$(git rev-parse HEAD)"
+          echo "SOURCE_SHA=$source_sha" >>"$GITHUB_ENV"
+          cp bin/mcp-control "/tmp/mcp-control-$source_sha"
+          digest="$(sha256sum "/tmp/mcp-control-$source_sha" | awk '{print $1}')"
+          printf '%s  %s\n' "$digest" "mcp-control-$source_sha" \
+            >"/tmp/mcp-control-$source_sha.sha256"
+
+      - name: Configure SSH
+        run: |
+          set -Eeuo pipefail
+          install -m 0700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" >"$HOME/.ssh/id_ed25519"
+          chmod 0600 "$HOME/.ssh/id_ed25519"
+          ssh-keyscan -p "$VPS_PORT" -H "$VPS_HOST" >>"$HOME/.ssh/known_hosts"
+
+      - name: Verify host prerequisites
+        run: |
+          set -Eeuo pipefail
+          ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          [[ "$(uname -m)" == "x86_64" ]]
+          command -v systemctl >/dev/null
+          command -v curl >/dev/null
+          command -v ss >/dev/null
+          sudo -n true
+          REMOTE
+
+      - name: Upload verified binary
+        run: |
+          set -Eeuo pipefail
+          scp -P "$VPS_PORT" \
+            "/tmp/mcp-control-$SOURCE_SHA" \
+            "/tmp/mcp-control-$SOURCE_SHA.sha256" \
+            "$VPS_USER@$VPS_HOST:/tmp/"
+
+      - name: Install privately and smoke test
+        run: |
+          set -Eeuo pipefail
+          ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+            "SOURCE_SHA='$SOURCE_SHA' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+
+          binary="/tmp/mcp-control-$SOURCE_SHA"
+          checksum="/tmp/mcp-control-$SOURCE_SHA.sha256"
+          cleanup() {
+            rm -f "$binary" "$checksum" /tmp/mcp-control-gateway.json
+          }
+          trap cleanup EXIT
+
+          cd /tmp
+          sha256sum -c "$(basename "$checksum")"
+          chmod 0755 "$binary"
+
+          # Pre-create a loopback-only gateway config. The installer preserves
+          # existing configs, so port 8443 is never exposed on a public bind.
+          cat >/tmp/mcp-control-gateway.json <<'JSON'
+          {
+            "apiVersion": "mcp-control.dev/v1alpha1",
+            "kind": "GatewayConfig",
+            "listen": {
+              "addr": "127.0.0.1:8443",
+              "tlsCertFile": "/etc/mcp-control/tls/gateway.crt",
+              "tlsKeyFile": "/etc/mcp-control/tls/gateway.key"
+            },
+            "agent": {
+              "socket": "/run/mcp-control/agent.sock"
+            },
+            "auth": {
+              "bearerTokenFile": "/etc/mcp-control/gateway.token"
+            }
+          }
+          JSON
+
+          sudo -n install -d -m 0750 /etc/mcp-control
+          sudo -n install -m 0640 /tmp/mcp-control-gateway.json \
+            /etc/mcp-control/gateway.json
+
+          "$binary" doctor
+          sudo -n "$binary" install --dry-run
+          sudo -n "$binary" install
+
+          # v1alpha1 preserves files but does not yet normalize ownership for
+          # its unprivileged service account. Apply the least-privilege modes
+          # required by the shipped systemd units.
+          sudo -n chown root:mcp-control /etc/mcp-control /etc/mcp-control/tls
+          sudo -n chmod 0750 /etc/mcp-control /etc/mcp-control/tls
+          sudo -n chown root:mcp-control \
+            /etc/mcp-control/agent.json \
+            /etc/mcp-control/gateway.json \
+            /etc/mcp-control/gateway.token \
+            /etc/mcp-control/tls/gateway.crt \
+            /etc/mcp-control/tls/gateway.key
+          sudo -n chmod 0640 \
+            /etc/mcp-control/agent.json \
+            /etc/mcp-control/gateway.json \
+            /etc/mcp-control/gateway.token \
+            /etc/mcp-control/tls/gateway.key
+          sudo -n chmod 0644 /etc/mcp-control/tls/gateway.crt
+
+          sudo -n systemctl restart mcp-control-agent mcp-control-gateway
+
+          for _ in $(seq 1 30); do
+            if sudo -n systemctl is-active --quiet mcp-control-agent && \
+               sudo -n systemctl is-active --quiet mcp-control-gateway; then
+              break
+            fi
+            sleep 1
+          done
+
+          sudo -n systemctl is-active --quiet mcp-control-agent || {
+            sudo -n journalctl -u mcp-control-agent --no-pager -n 100
+            exit 1
+          }
+          sudo -n systemctl is-active --quiet mcp-control-gateway || {
+            sudo -n journalctl -u mcp-control-gateway --no-pager -n 100
+            exit 1
+          }
+
+          test -S /run/mcp-control/agent.sock
+          listening="$(sudo -n ss -ltnH 'sport = :8443')"
+          printf '%s\n' "$listening"
+          grep -q '127.0.0.1:8443' <<<"$listening"
+          if grep -Eq '(^|[[:space:]])(0\.0\.0\.0|\*|\[::\]|:::):8443' <<<"$listening"; then
+            echo "gateway is publicly bound" >&2
+            exit 1
+          fi
+
+          curl --fail --silent --show-error --insecure \
+            https://127.0.0.1:8443/healthz >/dev/null
+          token="$(sudo -n cat /etc/mcp-control/gateway.token)"
+          curl --fail --silent --show-error --insecure \
+            -H "Authorization: Bearer $token" \
+            https://127.0.0.1:8443/v1/host >/dev/null
+          curl --fail --silent --show-error --insecure \
+            -H "Authorization: Bearer $token" \
+            https://127.0.0.1:8443/v1/units >/dev/null
+
+          /usr/local/bin/mcp-control version
+          echo "mcp-control private VPS deployment is healthy"
+          REMOTE
