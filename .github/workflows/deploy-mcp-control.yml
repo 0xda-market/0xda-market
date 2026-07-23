@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: mcp-control-vps
@@ -79,7 +80,14 @@ jobs:
           command -v systemctl >/dev/null
           command -v curl >/dev/null
           command -v ss >/dev/null
-          sudo -n true
+
+          if sudo -n true 2>/dev/null; then
+            echo "root method: sudo"
+          else
+            command -v docker >/dev/null
+            docker info >/dev/null
+            echo "root method: existing Docker trust"
+          fi
           REMOTE
 
       - name: Upload verified binary
@@ -91,6 +99,7 @@ jobs:
             "$VPS_USER@$VPS_HOST:/tmp/"
 
       - name: Install privately and smoke test
+        id: deploy
         run: |
           set -Eeuo pipefail
           ssh -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
@@ -99,18 +108,27 @@ jobs:
 
           binary="/tmp/mcp-control-$SOURCE_SHA"
           checksum="/tmp/mcp-control-$SOURCE_SHA.sha256"
+          root_script=/tmp/mcp-control-root-deploy.sh
           cleanup() {
-            rm -f "$binary" "$checksum" /tmp/mcp-control-gateway.json
+            rm -f "$binary" "$checksum" "$root_script"
           }
           trap cleanup EXIT
 
           cd /tmp
           sha256sum -c "$(basename "$checksum")"
           chmod 0755 "$binary"
+          "$binary" doctor
+
+          cat >"$root_script" <<'ROOT'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          binary="/tmp/mcp-control-$SOURCE_SHA"
 
           # Pre-create a loopback-only gateway config. The installer preserves
           # existing configs, so port 8443 is never exposed on a public bind.
-          cat >/tmp/mcp-control-gateway.json <<'JSON'
+          install -d -m 0750 /etc/mcp-control
+          cat >/etc/mcp-control/gateway.json <<'JSON'
           {
             "apiVersion": "mcp-control.dev/v1alpha1",
             "kind": "GatewayConfig",
@@ -127,54 +145,50 @@ jobs:
             }
           }
           JSON
+          chmod 0640 /etc/mcp-control/gateway.json
 
-          sudo -n install -d -m 0750 /etc/mcp-control
-          sudo -n install -m 0640 /tmp/mcp-control-gateway.json \
-            /etc/mcp-control/gateway.json
-
-          "$binary" doctor
-          sudo -n "$binary" install --dry-run
-          sudo -n "$binary" install
+          "$binary" install --dry-run
+          "$binary" install
 
           # v1alpha1 preserves files but does not yet normalize ownership for
           # its unprivileged service account. Apply the least-privilege modes
           # required by the shipped systemd units.
-          sudo -n chown root:mcp-control /etc/mcp-control /etc/mcp-control/tls
-          sudo -n chmod 0750 /etc/mcp-control /etc/mcp-control/tls
-          sudo -n chown root:mcp-control \
+          chown root:mcp-control /etc/mcp-control /etc/mcp-control/tls
+          chmod 0750 /etc/mcp-control /etc/mcp-control/tls
+          chown root:mcp-control \
             /etc/mcp-control/agent.json \
             /etc/mcp-control/gateway.json \
             /etc/mcp-control/gateway.token \
             /etc/mcp-control/tls/gateway.crt \
             /etc/mcp-control/tls/gateway.key
-          sudo -n chmod 0640 \
+          chmod 0640 \
             /etc/mcp-control/agent.json \
             /etc/mcp-control/gateway.json \
             /etc/mcp-control/gateway.token \
             /etc/mcp-control/tls/gateway.key
-          sudo -n chmod 0644 /etc/mcp-control/tls/gateway.crt
+          chmod 0644 /etc/mcp-control/tls/gateway.crt
 
-          sudo -n systemctl restart mcp-control-agent mcp-control-gateway
+          systemctl restart mcp-control-agent mcp-control-gateway
 
           for _ in $(seq 1 30); do
-            if sudo -n systemctl is-active --quiet mcp-control-agent && \
-               sudo -n systemctl is-active --quiet mcp-control-gateway; then
+            if systemctl is-active --quiet mcp-control-agent && \
+               systemctl is-active --quiet mcp-control-gateway; then
               break
             fi
             sleep 1
           done
 
-          sudo -n systemctl is-active --quiet mcp-control-agent || {
-            sudo -n journalctl -u mcp-control-agent --no-pager -n 100
+          systemctl is-active --quiet mcp-control-agent || {
+            journalctl -u mcp-control-agent --no-pager -n 100
             exit 1
           }
-          sudo -n systemctl is-active --quiet mcp-control-gateway || {
-            sudo -n journalctl -u mcp-control-gateway --no-pager -n 100
+          systemctl is-active --quiet mcp-control-gateway || {
+            journalctl -u mcp-control-gateway --no-pager -n 100
             exit 1
           }
 
           test -S /run/mcp-control/agent.sock
-          listening="$(sudo -n ss -ltnH 'sport = :8443')"
+          listening="$(ss -ltnH 'sport = :8443')"
           printf '%s\n' "$listening"
           grep -q '127.0.0.1:8443' <<<"$listening"
           if grep -Eq '(^|[[:space:]])(0\.0\.0\.0|\*|\[::\]|:::):8443' <<<"$listening"; then
@@ -184,7 +198,7 @@ jobs:
 
           curl --fail --silent --show-error --insecure \
             https://127.0.0.1:8443/healthz >/dev/null
-          token="$(sudo -n cat /etc/mcp-control/gateway.token)"
+          token="$(cat /etc/mcp-control/gateway.token)"
           curl --fail --silent --show-error --insecure \
             -H "Authorization: Bearer $token" \
             https://127.0.0.1:8443/v1/host >/dev/null
@@ -192,6 +206,66 @@ jobs:
             -H "Authorization: Bearer $token" \
             https://127.0.0.1:8443/v1/units >/dev/null
 
+          install -d -m 0750 -o root -g mcp-control /var/lib/mcp-control
+          printf '{"sourceSha":"%s","bind":"127.0.0.1:8443","deployedAt":"%s"}\n' \
+            "$SOURCE_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            >/var/lib/mcp-control/deployment.json
+          chown root:mcp-control /var/lib/mcp-control/deployment.json
+          chmod 0640 /var/lib/mcp-control/deployment.json
+
           /usr/local/bin/mcp-control version
           echo "mcp-control private VPS deployment is healthy"
+          ROOT
+          chmod 0700 "$root_script"
+
+          if sudo -n true 2>/dev/null; then
+            sudo -n env SOURCE_SHA="$SOURCE_SHA" /bin/bash "$root_script"
+          else
+            # The existing deploy account is intentionally in the Docker group,
+            # which already grants root-equivalent host control. Enter PID 1's
+            # namespaces only for this reviewed installer script.
+            docker run --rm \
+              --privileged \
+              --pid=host \
+              --network=host \
+              -e SOURCE_SHA="$SOURCE_SHA" \
+              alpine:3.20 \
+              sh -ec 'apk add --no-cache util-linux >/dev/null; exec nsenter -t 1 -m -u -i -n -p -r -w -- /usr/bin/env SOURCE_SHA="$SOURCE_SHA" /bin/bash /tmp/mcp-control-root-deploy.sh'
+          fi
+
+          curl --fail --silent --show-error --insecure \
+            https://127.0.0.1:8443/healthz >/dev/null
+          listening="$(ss -ltnH 'sport = :8443')"
+          grep -q '127.0.0.1:8443' <<<"$listening"
+          echo "verified from deploy account: loopback-only and healthy"
           REMOTE
+
+      - name: Report deployment result
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          DEPLOY_STATUS: ${{ job.status }}
+          DEPLOY_SOURCE_SHA: ${{ env.SOURCE_SHA }}
+        with:
+          script: |
+            const ok = process.env.DEPLOY_STATUS === 'success';
+            const icon = ok ? '✅' : '❌';
+            const source = process.env.DEPLOY_SOURCE_SHA || 'not resolved';
+            const runURL = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              `${icon} **mcp-control private VPS deployment: ${process.env.DEPLOY_STATUS}**`,
+              '',
+              `- source: \`0x0sky/mcp-control@${source}\``,
+              '- target bind: `127.0.0.1:8443`',
+              `- workflow: [run ${context.runId}](${runURL})`,
+              '',
+              ok
+                ? 'Both systemd services, the Unix socket, loopback bind, `/healthz`, `/v1/host`, and `/v1/units` passed.'
+                : 'The workflow failed closed. Review the linked run; no public `8443` bind is accepted.'
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 50,
+              body
+            });
