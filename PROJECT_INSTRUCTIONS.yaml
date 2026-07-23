@@ -1,0 +1,136 @@
+version: 1
+
+project:
+  name: 0xda-market
+  operating_model:
+    maintainer: solo_developer
+    primary_device: mobile_phone
+    agent_execution: connector_first
+  documentation_language: engineering_english
+
+repositories:
+  core:
+    slug: 0xda-market/0xda-market
+    role: provider_agnostic_core_api
+    runtime:
+      language: ruby
+      frameworks:
+        - rack
+        - sinatra
+      persistence:
+        orm: sequel
+        database: postgresql
+        schema: market
+  client_bot:
+    slug: 0xda-market/0xda-market-bot
+    role: telegram_client_adapter
+    runtime:
+      language: ruby
+
+execution:
+  connectors:
+    github: GitHub MCP
+    database: Supabase MCP
+  rules:
+    - act_directly_through_available_connectors
+    - do_not_request_manual_steps_when_a_connector_can_complete_them
+    - keep_core_provider_agnostic
+    - do_not_merge_deploy_or_run_irreversible_production_actions_without_owner_review
+
+workflow:
+  default_sequence:
+    - create_feature_branch
+    - implement_and_test
+    - open_draft_pull_request
+    - require_green_test_check
+    - request_owner_review
+    - merge_only_after_approval
+  branches:
+    development: master
+    production: release*
+    feature_pattern: agent/<description>
+  protection:
+    core_master:
+      pull_request_required: true
+      required_check: test
+    bot_master:
+      direct_push_supported: true
+      preferred_path: pull_request
+  file_mutation:
+    fetch_current_content_and_sha_before_write: true
+    non_default_branch_ref_format: refs/heads/<branch>
+    private_repository_code_search_supported: false
+    navigate_private_repositories_by_explicit_path: true
+  workflow_files:
+    connector_write_supported: false
+    path_pattern: .github/workflows/*
+    delivery_when_change_is_required: provide_complete_file_content_for_owner_review
+
+database:
+  supabase:
+    production:
+      project_ref: jrbslzmfttgeyvsnyxgy
+    test:
+      project_ref: cyxstycjamjdgvqmglsp
+    schemas:
+      - market
+  operations:
+    ddl: apply_migration
+    dml_and_inspection: execute_sql
+  migrations:
+    runner: PostgresMigrator
+    directory: db/migrations
+    before_numbering: inspect_current_directory_listing
+    ordering: alphabetical
+  rollout:
+    first: test
+    production: only_after_verification_and_owner_review
+
+domain:
+  pricing:
+    history: append_only
+    table: market.product_prices
+  currencies:
+    representation: non_marketable_products
+    separate_fx_table: false
+  display:
+    absent_price_value: omit_entire_line
+    forbidden_placeholder_example: "вчора: —"
+
+deployment:
+  primary:
+    provider: vps
+    topology: active_passive
+    environments:
+      development:
+        source_branch: master
+        database: test
+      production:
+        source_branch: release*
+        database: production
+    activation:
+      explicit_switch_required: true
+      production_confirmation_required: true
+    documentation: deploy/vps/README.md
+  fallback:
+    provider: render
+    role: rollback_target_until_vps_and_https_are_verified
+    services:
+      core:
+        production_url: https://zeroxda-market.onrender.com
+      client_bot:
+        production_url: https://zeroxda-market-bot.onrender.com
+      price_digest:
+        service: 0xda-market-price-digest
+        delivery_time: "07:00 Europe/Paris"
+  releases:
+    tags: semantic_versioning
+    production_branch: release*
+  supabase_connection:
+    host: aws-0-eu-central-1.pooler.supabase.com
+    port: 5432
+    username_format: postgres.<project-ref>
+    query:
+      sslmode: require
+    direct_db_host_supported: false
+    reason: no_ipv6_connectivity
