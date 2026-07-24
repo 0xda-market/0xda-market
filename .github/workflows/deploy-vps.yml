@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: vps-api-development
@@ -38,6 +39,7 @@ jobs:
       VPS_DEPLOY_PATH: ${{ vars.VPS_DEPLOY_PATH || '/opt/0xda-market' }}
       VPS_RUNTIME_PATH: /opt/0xda-market-runtime
       RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.workflow_run.head_sha }}
+      MCP_CONTROL_REF: 2f9766ea6993716d2d79ad91a4ce40f18baa44ef
 
     steps:
       - name: Validate deployment configuration
@@ -50,10 +52,43 @@ jobs:
           test -n "$VPS_SSH_PRIVATE_KEY"
           test -n "$VPS_DEPLOY_PATH"
           test -n "$RELEASE_SHA"
+          test -n "$MCP_CONTROL_REF"
 
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_SHA }}
+
+      - name: Check out pinned mcp-control
+        uses: actions/checkout@v4
+        with:
+          repository: 0x0sky/mcp-control
+          ref: ${{ env.MCP_CONTROL_REF }}
+          path: .deps/mcp-control
+          persist-credentials: false
+
+      - name: Set up Go for mcp-control
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: .deps/mcp-control/go.mod
+          cache: false
+
+      - name: Build pinned mcp-control
+        run: |
+          set -Eeuo pipefail
+          install -d -m 0755 deploy/vps/mcp-control/bin
+          (
+            cd .deps/mcp-control
+            go test ./...
+            for arch in amd64 arm64; do
+              CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+                go build \
+                  -trimpath \
+                  -ldflags="-s -w -X github.com/0x0sky/mcp-control/internal/cli.Version=$MCP_CONTROL_REF" \
+                  -o "$GITHUB_WORKSPACE/deploy/vps/mcp-control/bin/mcp-control-$arch" \
+                  ./cmd/mcp-control
+            done
+          )
+          chmod 0755 deploy/vps/mcp-control/bin/mcp-control-*
 
       - name: Configure SSH
         run: |
@@ -94,7 +129,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           archive="/tmp/0xda-market-${DEPLOY_ENV}-${RELEASE_SHA}.tar.gz"
-          tar --exclude=.git --exclude='deploy/vps/.env' -czf "$archive" .
+          tar --exclude=.git --exclude='.deps' --exclude='deploy/vps/.env' -czf "$archive" .
           scp -P "$VPS_PORT" "$archive" "$VPS_USER@$VPS_HOST:/tmp/"
 
       - name: Stage or activate development
@@ -143,3 +178,28 @@ jobs:
             -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' \
             | sort -nr | tail -n +4 | cut -d' ' -f2- | xargs -r rm -rf
           REMOTE
+
+      - name: Publish VPS deployment status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_STATE: ${{ job.status == 'success' && 'success' || 'failure' }}
+        run: |
+          set -Eeuo pipefail
+          description="three-workload VPS deployment failed"
+          if [[ "$DEPLOY_STATE" == "success" ]]; then
+            description="core, bot, and mcp-control are healthy"
+          fi
+          payload="$(jq -nc \
+            --arg state "$DEPLOY_STATE" \
+            --arg context "deploy/vps-stack-development" \
+            --arg description "$description" \
+            --arg target_url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{state:$state,context:$context,description:$description,target_url:$target_url}')"
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${RELEASE_SHA}" \
+            --data "$payload"

@@ -1,0 +1,16 @@
+{
+  "apiVersion": "mcp-control.dev/v1alpha1",
+  "kind": "AgentConfig",
+  "listen": {
+    "socket": "/run/mcp-control/agent.sock",
+    "mode": "0660"
+  },
+  "limits": {
+    "logMaxEntries": 500,
+    "requestTimeoutSeconds": 15
+  },
+  "servers": {
+    "directory": "/etc/mcp-control/servers.d"
+  },
+  "readOnly": true
+}

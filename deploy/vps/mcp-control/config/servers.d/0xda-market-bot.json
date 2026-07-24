@@ -1,0 +1,22 @@
+{
+  "apiVersion": "mcp-control.dev/v1alpha1",
+  "kind": "Server",
+  "metadata": {
+    "id": "0xda-market-bot",
+    "displayName": "0xda-market bot"
+  },
+  "spec": {
+    "kind": "telegram-bot",
+    "runtime": {
+      "adapter": "none-v1"
+    },
+    "health": {
+      "adapter": "local-http-v1",
+      "endpoint": "http://127.0.0.1:10001/health",
+      "timeoutSeconds": 3
+    },
+    "logs": {
+      "adapter": "none-v1"
+    }
+  }
+}
