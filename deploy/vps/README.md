@@ -1,17 +1,23 @@
 # VPS deployment
 
-This directory runs the provider-agnostic `0xda-market` API on one Ubuntu VPS
-with Docker Compose and Caddy.
+This directory runs the provider-agnostic `0xda-market` API and the public Caddy
+edge on one Ubuntu VPS. The client bot is deployed from
+`0xda-market/0xda-market-bot` on the same host and private Docker network.
 
-The VPS is intentionally **active/passive**: both environments can be staged,
-but only one complete core + bot stack may be running at a time.
+The VPS is the canonical application runtime. Render configuration is no longer
+part of the supported deployment path.
 
-## Environment contract
+## Current deployment contract
 
-| GitHub environment | Source branch | Telegram bot | Supabase database |
+Automated deployment is currently development-only:
+
+| GitHub environment | Source branch | Runtime directory | Database |
 | --- | --- | --- | --- |
-| `development` | `master` | `@zeroxda_market_test_bot` | test |
-| `production` | `release*` | `@zeroxda_market_bot` | production |
+| `development` | `master` | `environments/development` | test Supabase |
+
+Production directories and the reviewed environment-switch controller remain in
+place, but production is not staged automatically. Enabling production requires
+a separate reviewed change to both core and bot deployment workflows.
 
 `DEPLOY_ENV` is the only runtime environment marker. It must match the GitHub
 Environment and the VPS directory containing the runtime file.
@@ -45,13 +51,13 @@ Environment and the VPS directory containing the runtime file.
   active-environment
 ```
 
-The state file contains either `development` or `production`. It is written only
-after both the core and bot health checks pass.
+The state file is written only after the selected core and bot releases pass
+health checks.
 
-Core Caddy, core API and the active bot share the private external Docker network
-`zero-x-da-market-edge`. Both deploy scripts create this network when it is
-missing. The bot keeps its host port bound to `127.0.0.1:10001`; Caddy reaches it
-through the internal alias `market-bot`.
+Core Caddy, the core API and the active bot share the private external Docker
+network `zero-x-da-market-edge`. Both deploy scripts create it when missing. The
+bot remains bound to `127.0.0.1:10001`; Caddy reaches it through the internal
+alias `market-bot`.
 
 ## Bootstrap
 
@@ -63,42 +69,36 @@ curl -fsSL \
   | bash
 ```
 
-The script installs Docker Engine and Compose, enables SSH, Fail2ban and UFW,
-creates the `deploy` user, keeps SSH port `22022` open, and prepares both
-repositories for both environments.
+The script installs Docker Engine and Compose, enables Docker at boot, configures
+SSH, Fail2ban and UFW, creates the `deploy` user, keeps SSH port `22022` open, and
+prepares both repository layouts.
 
-## GitHub environments
+## GitHub development environment
 
-Create `development` and `production` in both repositories.
+Configure `development` in both repositories.
 
-`0xda-market/0xda-market` secrets:
+Required secrets:
 
 - `VPS_HOST`
 - `VPS_USER=deploy`
 - `VPS_SSH_PRIVATE_KEY`
 
-Core variable:
+Repository variables:
 
-- `VPS_DEPLOY_PATH=/opt/0xda-market`
+- core: `VPS_DEPLOY_PATH=/opt/0xda-market`
+- bot: `VPS_BOT_DEPLOY_PATH=/opt/0xda-market-bot`
 
-`0xda-market/0xda-market-bot` uses the same three secrets and:
-
-- `VPS_BOT_DEPLOY_PATH=/opt/0xda-market-bot`
-
-The SSH port is fixed to `22022` in the workflows. Do not create `VPS_PORT`.
-Use required reviewers on the GitHub `production` environment before enabling a
-production cutover.
+The SSH port is fixed to `22022` in both workflows. Do not create `VPS_PORT`.
 
 ## Runtime files
 
-Create one core runtime file per environment:
+Core development runtime:
 
 ```text
 /opt/0xda-market/environments/development/shared/.env
-/opt/0xda-market/environments/production/shared/.env
 ```
 
-Start from `deploy/vps/.env.example`. The values must be independent:
+Start from `deploy/vps/.env.example`:
 
 ```env
 DEPLOY_ENV=development
@@ -106,18 +106,25 @@ DOMAIN=0xda-market.nilx.one
 DATABASE_URL=<development Supabase URL>
 PUBLIC_API_TOKEN=<development token>
 MANUAL_PROVIDER_TOKEN=<development token>
-VERIFY_PUBLIC_HTTPS=0
+VERIFY_PUBLIC_HTTPS=1
 ```
 
-The production file uses `DEPLOY_ENV=production`, the production Supabase URL,
-and distinct API tokens. Dedicated Telegram bot tokens do not belong in the
-core runtime file.
+Bot development runtime:
 
-Protect all runtime files:
+```text
+/opt/0xda-market-bot/environments/development/shared/.env
+```
+
+Use the matching core URL and token. Telegram tokens and webhook secrets belong
+only in the bot runtime file.
+
+Protect runtime files:
 
 ```sh
 chown deploy:deploy /opt/0xda-market/environments/*/shared/.env
+chown deploy:deploy /opt/0xda-market-bot/environments/*/shared/.env
 chmod 0600 /opt/0xda-market/environments/*/shared/.env
+chmod 0600 /opt/0xda-market-bot/environments/*/shared/.env
 ```
 
 ## Administrator bootstrap
@@ -125,13 +132,8 @@ chmod 0600 /opt/0xda-market/environments/*/shared/.env
 Administrator roles are persisted in Supabase. There is no
 `ADMIN_TELEGRAM_IDS` runtime variable and the bot is not a source of role data.
 
-The user must authenticate once so core creates a row in `market.users`. Obtain
-the internal UUID from the authenticated API resource (`data.id`) or the
-protected `/v1/users?status=active` response. Do not use a Telegram ID,
-username, chat ID, or another provider identifier for bootstrap.
-
-After the selected core environment is active and migrations have completed,
-promote the existing internal user once:
+After a user authenticates and receives an internal `market.users.id`, promote
+that existing user once:
 
 ```sh
 cd /opt/0xda-market/environments/development/current/deploy/vps
@@ -139,53 +141,35 @@ docker compose exec -T api \
   bundle exec ruby bin/bootstrap_admin USER_ID
 ```
 
-Use the matching production path only after the production environment is
-reviewed and active. The command is idempotent: rerunning it keeps the same
-persisted `admin` role. An unknown internal user ID fails without creating a
-user or external identity. Subsequent administrator assignments use the normal
-admin-only application flow.
+The command is idempotent and accepts only an existing internal user UUID.
 
 ## Deployment behavior
 
-After green `CI`:
+After green `CI`, a push to `master` stages or refreshes `development`.
 
-- a push to `master` stages or refreshes `development`;
-- a push to a `release*` branch stages or refreshes `production`;
-- an inactive environment is built and its `current` symlink is updated, but it
-  is not started;
-- an already active environment is updated immediately and health-gated;
-- a failed active refresh attempts to restart the previous release.
+- a missing or inactive environment is staged without changing the active marker;
+- a manual workflow run from `master` may force development activation;
+- an active environment is refreshed immediately and health-gated;
+- a failed refresh attempts to restart the previous release;
+- a successful deploy does not register a Telegram webhook.
 
-A successful deploy does **not** switch the active environment.
-
-Caddy owns public HTTPS. Requests under `/bot/*` are forwarded through the
-shared edge network to `market-bot:10000`, with the `/bot` prefix stripped.
-All other requests continue to the core API at `api:10000`.
+Caddy owns public HTTPS. Requests under `/bot/*` are forwarded to
+`market-bot:10000` with the `/bot` prefix stripped. Other requests go to the core
+API at `api:10000`.
 
 ## Environment switch
 
-Use the manual GitHub Actions workflow `Switch VPS Environment` from the core
-repository. It is the only supported switch control.
+Use `Switch VPS Environment` from the core repository. The controller validates
+both release pairs, starts core before bot, updates the active marker atomically,
+and attempts to restore the previous pair on failure.
 
-The controller:
-
-1. validates that both target releases and both target `.env` files exist;
-2. stops the inactive core and bot stacks;
-3. starts the target core and waits for health;
-4. starts the target bot and waits for health;
-5. writes `active-environment` atomically;
-6. restarts the previous environment when the target fails.
-
-Selecting `production` in the workflow is the explicit cutover confirmation.
-The workflow derives `CONFIRM_PRODUCTION=1` for the controller automatically.
-
-The same operation can be inspected manually on the VPS:
+Current status:
 
 ```sh
 bash /opt/0xda-market/environments/development/current/deploy/vps/switch-environment.sh status
 ```
 
-Manual development activation:
+Refresh development manually:
 
 ```sh
 sudo -u deploy \
@@ -193,47 +177,46 @@ sudo -u deploy \
   development
 ```
 
-Manual production activation is intentionally explicit:
+Production activation remains guarded by `CONFIRM_PRODUCTION=1` and is unsupported
+until compatible production releases have been staged through a reviewed release
+workflow.
+
+## Verification
+
+Run the complete read-only verifier after deployment and after every VPS reboot:
 
 ```sh
-sudo -u deploy env CONFIRM_PRODUCTION=1 \
-  bash /opt/0xda-market/environments/production/current/deploy/vps/switch-environment.sh \
-  production
+sudo -u deploy \
+  bash /opt/0xda-market/environments/development/current/deploy/vps/verify.sh
 ```
 
-Prefer the reviewed GitHub workflow over manual activation.
-
-## Smoke checks
-
-For the active environment:
+Basic public smoke checks:
 
 ```sh
-cat /opt/0xda-market-runtime/active-environment
 curl -i https://0xda-market.nilx.one/health
 curl -i https://0xda-market.nilx.one/bot/health
 ```
 
-Inspect the selected core stack:
-
-```sh
-cd /opt/0xda-market/environments/development/current/deploy/vps
-docker compose ps
-docker compose logs --tail 200 api
-docker compose logs --tail 200 caddy
-```
-
-The bot remains a separate service and is verified from its repository layout.
 The public webhook path `/bot/telegram/webhook` maps to the bot route
 `/telegram/webhook`.
 
+## Operations
+
+See [`OPERATIONS.md`](OPERATIONS.md) for:
+
+- reboot and autostart verification;
+- HTTPS and health diagnostics;
+- bounded log retention;
+- PostgreSQL/Supabase and runtime-secret backup responsibilities;
+- automatic and manual rollback;
+- the safety gate for retiring the previous host.
+
 ## Safety gates
 
-- Keep `REGISTER_TELEGRAM_WEBHOOK=0` in the bot environment until core and bot
-  local and public health checks are green.
-- Do not activate production until the production Supabase URL, production bot
-  token, webhook secret and API token pairing have been reviewed.
-- Do not run both environments simultaneously; they intentionally share ports
-  `80`, `443` and `127.0.0.1:10001`.
+- Keep `REGISTER_TELEGRAM_WEBHOOK=0` until local and public health checks pass.
 - Keep the bot host port on `127.0.0.1`; public access must pass through Caddy.
-- Do not retire the previous hosting path until HTTPS, API traffic and bot
-  traffic have passed a subsequent deployment.
+- Do not run both environments simultaneously; they share ports `80`, `443` and
+  `127.0.0.1:10001`.
+- Do not activate production until the production database, tokens, bot pairing,
+  CI and recovery plan have been reviewed.
+- Do not disable or delete the previous host as part of an application deploy.
