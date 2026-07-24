@@ -3,10 +3,10 @@
 Provider-agnostic execution and catalog core for turning a client intent into a
 quoted, accepted and fulfilled order.
 
-The core does not know which channel submitted a request, which external
-identity provider authenticated a user, or which concrete provider fulfills an
-order. Capabilities, payloads, quote terms and private provider state remain
-opaque documents.
+The core does not know which channel submitted a request, which external identity
+provider authenticated a user, or which concrete provider fulfils an order.
+Capabilities, payloads, quote terms and private provider state remain opaque
+documents.
 
 ## Architecture
 
@@ -19,7 +19,7 @@ HTTP transport / application services
     ↓
 core domain contracts
     ↑
-persistence and fulfillment adapters
+persistence and fulfilment adapters
 ```
 
 Dependencies point inward:
@@ -43,12 +43,12 @@ and enforced by architecture tests.
 - normalized retryable and terminal provider failures;
 - optimistic concurrency and transactional PostgreSQL persistence;
 - public and operator JSON APIs protected by separate bearer tokens;
-- durable manual fulfillment through `ManualProvider`;
+- durable manual fulfilment through `ManualProvider`;
 - provider-neutral users and external identities;
 - internal-UUID administrator authorization;
 - localized product catalog and append-only price history;
 - PostgreSQL and in-memory adapters;
-- active-passive development and production VPS deployment.
+- health-gated VPS deployment with Caddy HTTPS and paired bot routing.
 
 ## Domain lifecycle
 
@@ -62,7 +62,7 @@ intent -> quote -> accepted -> processing -> succeeded
                               +-> cancelled
 ```
 
-A fulfillment provider implements:
+A fulfilment provider implements:
 
 ```ruby
 provider.key
@@ -86,7 +86,7 @@ market.users.id
     └── provider=<future adapter>, provider_user_id=...
 ```
 
-Authenticate an external identity through the generic public endpoint:
+Authenticate through the generic public endpoint:
 
 ```sh
 curl -sS http://localhost:9292/v1/auth/external \
@@ -105,24 +105,10 @@ curl -sS http://localhost:9292/v1/auth/external \
 
 The channel adapter validates and constructs provider data. Core stores it as
 opaque JSON and returns a stable internal user UUID. Repeated authentication
-updates that external identity without replacing the internal user.
+updates the external identity without replacing the internal user.
 
 Trusted operator clients use the same contract under `/operator` and receive the
-`broker` role:
-
-```sh
-curl -sS http://localhost:9292/operator/v1/auth/external \
-  -H 'authorization: Bearer operator-secret' \
-  -H 'content-type: application/json' \
-  -d '{
-    "provider": "telegram",
-    "provider_user_id": "123456789",
-    "provider_data": {"chat_id": "123456789"}
-  }'
-```
-
-The request cannot select `admin`. Authentication never grants administrator
-rights.
+`broker` role. Authentication cannot request or grant `admin`.
 
 ## Administrator authorization
 
@@ -135,7 +121,7 @@ DATABASE_URL='postgresql://...' \
 ```
 
 The command is idempotent and accepts only an existing internal user ID.
-Administrator operations also use internal IDs:
+Administrator operations also use internal UUIDs:
 
 ```sh
 curl -sS http://localhost:9292/v1/admin/users/set-admin \
@@ -148,16 +134,16 @@ curl -sS http://localhost:9292/v1/admin/users/set-admin \
 ```
 
 External usernames, chat IDs and profile links are resolved by the channel
-adapter before this request reaches core.
+adapter before the request reaches core.
 
 ## Product catalog and pricing
 
-`market.products` stores locale-neutral product state, stable SKU, position,
-status, metadata and current USDT price snapshot.
+`market.products` stores locale-neutral state, stable SKU, position, status,
+metadata and the current USDT price snapshot.
 
-`market.product_localizations` stores display copy per locale. The default locale
-is `en_US`; `uk_UA` is seeded for the initial catalog. Resolution falls back from
-the requested locale to `en_US`, then to the product short name.
+`market.product_localizations` stores display copy per locale. The default is
+`en_US`; `uk_UA` is seeded for the initial catalog. Resolution falls back from the
+requested locale to `en_US`, then to the product short name.
 
 `market.product_prices` is append-only history. Every editor is recorded through
 `market.users.id`, never through an external provider identifier.
@@ -179,7 +165,7 @@ curl -sS 'http://localhost:9292/v1/currencies?locale=uk_UA' \
   -H 'authorization: Bearer client-secret'
 ```
 
-## Manual fulfillment
+## Manual fulfilment
 
 `ManualProvider` converts execution into an operator task:
 
@@ -190,7 +176,7 @@ curl -sS 'http://localhost:9292/v1/currencies?locale=uk_UA' \
 5. execute the pending order again to resolve the result.
 
 The operator transport depends on a task-service port, not on the concrete
-provider class. Production stores tasks in PostgreSQL.
+provider class. Persistent environments store tasks in PostgreSQL.
 
 ## Run locally
 
@@ -207,8 +193,8 @@ bundle exec rackup
 ```
 
 Without `MANUAL_PROVIDER_TOKEN`, the application starts with no registered
-fulfillment capability but keeps `/health` available. Production requires both
-API tokens and `DATABASE_URL`.
+fulfilment capability but keeps `/health` available. Deployed environments
+require both API tokens and `DATABASE_URL`.
 
 Core runtime variables do not include channel tokens or webhook secrets.
 
@@ -256,18 +242,13 @@ curl -sS -X POST http://localhost:9292/operator/v1/tasks/TASK_ID/complete \
 
 ## Project operating contract
 
-This repository is the canonical project hub for a solo, mobile-first workflow.
-Repository and database work should be completed through the available GitHub and
-Supabase connectors instead of delegating connector-capable steps to the owner.
+This repository is the canonical project hub. The default delivery path is
+feature branch → draft pull request → green CI → owner review → merge. The core
+must remain provider-agnostic, database changes must be verified against the test
+Supabase project first, and merge, deployment or irreversible production actions
+require explicit owner approval.
 
-The default delivery path is feature branch → draft pull request → green `test`
-check → owner review → merge. The core must remain provider-agnostic, database
-changes must be verified against the test Supabase project first, and merge,
-deployment or irreversible production actions require explicit owner review.
-
-The complete machine-readable contract, including canonical repositories,
-Supabase project references, migration rules, domain invariants and deployment
-fallbacks, is stored in
+The complete machine-readable contract is stored in
 [`PROJECT_INSTRUCTIONS.yaml`](PROJECT_INSTRUCTIONS.yaml).
 
 ## Tests
@@ -282,21 +263,25 @@ CI runs:
 - PostgreSQL migrations and persistence tests;
 - architecture-boundary tests;
 - VPS operational script tests;
-- the production Docker build.
+- the production Docker build and Caddy configuration validation.
 
 ## Deployment
 
-VPS deployment is active-passive:
+The VPS is the canonical runtime:
 
-- `master` stages `development`;
-- `release*` stages `production`;
-- only one complete core + bot environment may be active;
-- switching production requires explicit confirmation;
-- staging never registers a Telegram webhook.
+- green `master` deploys the development API to the VPS;
+- Caddy serves `https://0xda-market.nilx.one`;
+- `/bot/*` is forwarded to the separately deployed client bot;
+- deployment is health-gated and attempts to restore the previous release on
+  failure;
+- production directories are reserved but production deployment is not enabled
+  by the current automatic workflows;
+- environment switches, webhook changes, DNS changes and retirement of the old
+  host remain separate reviewed operations.
 
-See [`deploy/vps/README.md`](deploy/vps/README.md) for the reviewed operational
-procedure. Render remains the rollback target until VPS networking, HTTPS and bot
-traffic are verified.
+See [`deploy/vps/README.md`](deploy/vps/README.md) for deployment setup and
+[`deploy/vps/OPERATIONS.md`](deploy/vps/OPERATIONS.md) for reboot verification,
+HTTPS, health, logs, backups and rollback.
 
 ## Versioning
 
