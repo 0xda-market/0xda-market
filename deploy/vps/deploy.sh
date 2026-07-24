@@ -35,7 +35,12 @@ if [[ "$deploy_mode" == "stage" ]]; then
   exit 0
 fi
 
-docker compose up --detach --remove-orphans
+if ! docker compose up --detach --remove-orphans; then
+  echo "Docker Compose failed while starting the VPS stack" >&2
+  docker compose ps >&2 || true
+  docker compose logs --tail 200 api >&2 || true
+  exit 1
+fi
 
 api_container="$(docker compose ps --quiet api)"
 if [[ -z "$api_container" ]]; then
