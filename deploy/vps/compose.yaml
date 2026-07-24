@@ -30,6 +30,7 @@ services:
         condition: service_healthy
     environment:
       DOMAIN: ${DOMAIN}
+      MIND_WEB_DOMAIN: ${MIND_WEB_DOMAIN:-mind.nilx.one}
     ports:
       - "80:80"
       - "443:443"
