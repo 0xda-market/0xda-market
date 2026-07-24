@@ -50,6 +50,8 @@ services:
 
 networks:
   edge:
+    name: ${MARKET_EDGE_NETWORK:-zero-x-da-market-edge}
+    external: true
 
 volumes:
   caddy_data:
