@@ -48,6 +48,11 @@ Environment and the VPS directory containing the runtime file.
 The state file contains either `development` or `production`. It is written only
 after both the core and bot health checks pass.
 
+Core Caddy, core API and the active bot share the private external Docker network
+`zero-x-da-market-edge`. Both deploy scripts create this network when it is
+missing. The bot keeps its host port bound to `127.0.0.1:10001`; Caddy reaches it
+through the internal alias `market-bot`.
+
 ## Bootstrap
 
 Run as `root` on Ubuntu 24.04 LTS:
@@ -153,6 +158,10 @@ After green `CI`:
 
 A successful deploy does **not** switch the active environment.
 
+Caddy owns public HTTPS. Requests under `/bot/*` are forwarded through the
+shared edge network to `market-bot:10000`, with the `/bot` prefix stripped.
+All other requests continue to the core API at `api:10000`.
+
 ## Environment switch
 
 Use the manual GitHub Actions workflow `Switch VPS Environment` from the core
@@ -201,6 +210,7 @@ For the active environment:
 ```sh
 cat /opt/0xda-market-runtime/active-environment
 curl -i https://0xda-market.nilx.one/health
+curl -i https://0xda-market.nilx.one/bot/health
 ```
 
 Inspect the selected core stack:
@@ -213,14 +223,17 @@ docker compose logs --tail 200 caddy
 ```
 
 The bot remains a separate service and is verified from its repository layout.
+The public webhook path `/bot/telegram/webhook` maps to the bot route
+`/telegram/webhook`.
 
 ## Safety gates
 
 - Keep `REGISTER_TELEGRAM_WEBHOOK=0` in the bot environment until core and bot
-  health checks are green.
+  local and public health checks are green.
 - Do not activate production until the production Supabase URL, production bot
   token, webhook secret and API token pairing have been reviewed.
 - Do not run both environments simultaneously; they intentionally share ports
   `80`, `443` and `127.0.0.1:10001`.
+- Keep the bot host port on `127.0.0.1`; public access must pass through Caddy.
 - Do not retire the previous hosting path until HTTPS, API traffic and bot
   traffic have passed a subsequent deployment.
