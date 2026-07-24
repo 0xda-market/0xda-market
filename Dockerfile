@@ -48,4 +48,4 @@ EXPOSE 10000
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD ["ruby", "-rnet/http", "-e", "uri = URI('http://127.0.0.1:' + ENV.fetch('PORT', '10000') + '/health'); exit(Net::HTTP.get_response(uri).is_a?(Net::HTTPSuccess) ? 0 : 1)"]
 
-CMD ["sh", "-c", "bundle exec ruby bin/migrate && bundle exec ruby bin/configure_telegram_webhooks && exec bundle exec puma -C config/puma.rb"]
+CMD ["sh", "-c", "bundle exec ruby bin/migrate && exec bundle exec puma -C config/puma.rb"]
