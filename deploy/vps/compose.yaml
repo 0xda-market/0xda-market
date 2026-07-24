@@ -24,6 +24,50 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  mcp-control:
+    image: alpine:3.22
+    restart: unless-stopped
+    init: true
+    network_mode: host
+    user: "65532:65532"
+    depends_on:
+      api:
+        condition: service_healthy
+    command:
+      - /opt/mcp-control/mcp-control
+      - agent
+      - --config
+      - /etc/mcp-control/agent.json
+    volumes:
+      - ./mcp-control/bin/mcp-control:/opt/mcp-control/mcp-control:ro
+      - ./mcp-control/config:/etc/mcp-control:ro
+    tmpfs:
+      - /run/mcp-control:rw,noexec,nosuid,nodev,size=1m,mode=0750,uid=65532,gid=65532
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777,uid=65532,gid=65532
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 10s
+    healthcheck:
+      test:
+        - CMD
+        - /opt/mcp-control/mcp-control
+        - servers
+        - list
+        - --config
+        - /etc/mcp-control/agent.json
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
