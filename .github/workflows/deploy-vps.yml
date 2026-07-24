@@ -59,9 +59,36 @@ jobs:
         run: |
           set -Eeuo pipefail
           install -m 0700 -d "$HOME/.ssh"
-          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" >"$HOME/.ssh/id_ed25519"
-          chmod 0600 "$HOME/.ssh/id_ed25519"
-          ssh-keyscan -p "$VPS_PORT" -H "$VPS_HOST" >>"$HOME/.ssh/known_hosts"
+
+          key_path="$HOME/.ssh/id_ed25519"
+          known_hosts_path="$HOME/.ssh/known_hosts"
+          keyscan_output="$HOME/.ssh/known_hosts.pending"
+          keyscan_error="$HOME/.ssh/ssh-keyscan.error"
+
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" >"$key_path"
+          chmod 0600 "$key_path"
+
+          if ! ssh-keygen -y -f "$key_path" >/dev/null; then
+            echo "::error::VPS_SSH_PRIVATE_KEY is not a valid OpenSSH private key"
+            exit 1
+          fi
+
+          for attempt in 1 2 3 4 5; do
+            if ssh-keyscan -T 5 -p "$VPS_PORT" -H "$VPS_HOST" \
+              >"$keyscan_output" 2>"$keyscan_error" && [[ -s "$keyscan_output" ]]; then
+              sort -u "$keyscan_output" >"$known_hosts_path"
+              chmod 0600 "$known_hosts_path"
+              break
+            fi
+
+            if [[ "$attempt" -eq 5 ]]; then
+              cat "$keyscan_error" >&2 || true
+              echo "::error::Cannot reach the configured VPS SSH endpoint on TCP ${VPS_PORT}. Ensure sshd is listening and every provider/UFW firewall allows the port."
+              exit 1
+            fi
+
+            sleep $((attempt * 2))
+          done
 
       - name: Upload release
         run: |
