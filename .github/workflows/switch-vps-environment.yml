@@ -6,15 +6,11 @@ on:
       target_environment:
         description: Environment to activate on the VPS
         required: true
+        default: development
         type: choice
         options:
           - development
           - production
-      confirm_production:
-        description: Confirm the production cutover
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -31,7 +27,7 @@ jobs:
       name: ${{ inputs.target_environment }}
     env:
       TARGET_ENV: ${{ inputs.target_environment }}
-      CONFIRM_PRODUCTION: ${{ inputs.confirm_production && '1' || '0' }}
+      CONFIRM_PRODUCTION: ${{ inputs.target_environment == 'production' && '1' || '0' }}
       VPS_HOST: ${{ secrets.VPS_HOST }}
       VPS_USER: ${{ secrets.VPS_USER }}
       VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
