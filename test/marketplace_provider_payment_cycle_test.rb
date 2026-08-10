@@ -37,8 +37,18 @@ class MarketplaceProviderPaymentCycleTest < Minitest::Test
       position: 1,
       created_at: @clock.call
     )
+    usdt = ZeroXDA::Market::Catalog::Product.new(
+      sku: "usdt",
+      short_name: "USDT",
+      name: "Tether USD",
+      button_label: "USDT",
+      metadata: { "family" => "currency", "code" => "USDT" },
+      marketable: false,
+      position: 100,
+      created_at: @clock.call
+    )
     catalog = ZeroXDA::Market::Catalog::Service.new(
-      store: ZeroXDA::Market::Catalog::MemoryStore.new(products: [product]),
+      store: ZeroXDA::Market::Catalog::MemoryStore.new(products: [product, usdt]),
       clock: @clock
     )
     pricing = ZeroXDA::Market::Pricing::Service.new(
