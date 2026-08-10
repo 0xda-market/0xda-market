@@ -14,16 +14,19 @@ module ZeroXDA
       # amount is an integer number of provider units while the marketplace
       # remains economically canonical in USDT.
       class IntegerUnitProvider
-        attr_reader :key, :default_cost
+        attr_reader :key, :default_cost, :funds_hold_seconds
 
         def initialize(
           key:, currency:, usdt_per_unit:, clock:, store: MemoryStore.new,
-          allowed_skus: nil, variable_fee_bps: 0, fixed_cost_usdt: 0
+          allowed_skus: nil, variable_fee_bps: 0, fixed_cost_usdt: 0,
+          funds_hold_seconds: 0
         )
           @key = Core::RecordSupport.identifier(key.to_s, field: "settlement provider key")
           @currency = Core::RecordSupport.identifier(currency.to_s.upcase, field: "settlement currency")
           @clock = clock
           @store = store
+          @funds_hold_seconds = Integer(funds_hold_seconds)
+          raise ArgumentError, "funds_hold_seconds must be non-negative" if @funds_hold_seconds.negative?
           @terms = Payments::FixedRateIntegerTerms.new(
             provider_key: @key,
             currency: @currency,
@@ -34,6 +37,9 @@ module ZeroXDA
             variable_fee_bps: variable_fee_bps,
             fixed_cost_usdt: fixed_cost_usdt
           )
+        rescue ArgumentError, TypeError
+          raise ArgumentError, "funds_hold_seconds must be a non-negative integer" if !defined?(@funds_hold_seconds) || @funds_hold_seconds.nil?
+          raise
         end
 
         def cost(quote:)
@@ -88,6 +94,14 @@ module ZeroXDA
 
         def find_by_order(order_id)
           @store.find_by_order(order_id)
+        end
+
+        def funds_available_at(order_id:)
+          settlement = @store.find_by_order(order_id) || raise(Core::NotFound.new("settlement", order_id))
+          return nil unless settlement.settled?
+
+          value = settlement.provider_data["funds_available_at"]
+          value && Time.iso8601(value)
         end
 
         # Trusted adapter action after an authoritative provider-side payment
@@ -148,12 +162,17 @@ module ZeroXDA
               )
             end
 
+            funds_available_at = now + @funds_hold_seconds
             settled = rebuild(
               current,
               state: "settled",
               received_usdt: received_usdt,
               external_reference: payment_reference,
-              provider_data: current.provider_data.merge("confirmation" => payment_data),
+              provider_data: current.provider_data.merge(
+                "confirmation" => payment_data,
+                "funds_available_at" => funds_available_at.iso8601(6),
+                "funds_hold_seconds" => @funds_hold_seconds
+              ),
               updated_at: now
             )
             store.replace(settled, expected_version: current.version)
