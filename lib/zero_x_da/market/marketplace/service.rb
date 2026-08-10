@@ -132,10 +132,16 @@ module ZeroXDA
             "idempotency_key" => "quotes/#{quote_id}/payment"
           }
           provider_terms = @payment_terms_provider&.quote(
-            amount_usdt: product.fetch("total_price_usdt")
+            amount_usdt: product.fetch("total_price_usdt"),
+            sku: product.fetch("sku")
           )
+          if provider_terms && !@settlement_provider
+            raise Core::ProviderContractError.new(
+              "provider payment terms require a settlement provider"
+            )
+          end
           payment["provider"] = provider_terms if provider_terms
-          payment["settlement_required"] = true if @settlement_provider && !provider_terms
+          payment["settlement_required"] = true if @settlement_provider
           order = @kernel.accept_quote(
             quote_id,
             initial_status: "payment_pending",
@@ -146,7 +152,7 @@ module ZeroXDA
             quote_id: quote_id,
             order_id: order.id
           )
-          @kernel.charge_settlement(order.id) if @settlement_provider && !provider_terms
+          @kernel.charge_settlement(order.id) if @settlement_provider
           OrderResult.new(order: order, reservation: reservation)
         rescue StandardError
           begin
@@ -161,10 +167,8 @@ module ZeroXDA
         end
 
         # Trusted provider confirmation scoped to the owning customer. Provider
-        # evidence must match the immutable provider terms snapshotted when the
-        # order was accepted. Client-side invoice callbacks are never accepted
-        # as payment proof; the channel adapter calls this only after receiving
-        # the provider's authoritative server-side payment event.
+        # evidence must match immutable terms and a durable settlement record.
+        # Client-side payment UI callbacks are never accepted as payment proof.
         def confirm_customer_payment(
           customer_user_id:, order_id:, reference:, provider:, amount:, currency:, data: {}
         )
@@ -174,10 +178,11 @@ module ZeroXDA
           ensure_owner!(reservation, customer_id)
           before = @kernel.find_order(order_id)
           ensure_payment_required!(before)
+          provider_amount = positive_integer(amount, field: "payment amount")
           validate_provider_payment!(
             before,
             provider: provider,
-            amount: amount,
+            amount: provider_amount,
             currency: currency
           )
 
@@ -192,9 +197,24 @@ module ZeroXDA
             return OrderResult.new(order: before, reservation: reservation)
           end
 
+          unless @settlement_provider&.respond_to?(:confirm)
+            raise Core::ProviderContractError.new(
+              "provider payment confirmation requires a confirming settlement provider"
+            )
+          end
+          settlement = @settlement_provider.confirm(
+            order_id: before.id,
+            reference: reference,
+            provider: provider,
+            amount: provider_amount,
+            currency: currency,
+            data: data
+          )
+          @kernel.verify_settlement(settlement)
+
           evidence = Core::RecordSupport.document(data, field: "payment data").merge(
             "provider" => provider.to_s,
-            "amount" => Integer(amount).to_s,
+            "amount" => provider_amount.to_s,
             "currency" => currency.to_s.upcase
           )
           confirm_payment_record(
@@ -203,8 +223,6 @@ module ZeroXDA
             data: evidence,
             reservation: reservation
           )
-        rescue ArgumentError, TypeError
-          raise ArgumentError, "payment amount must be a positive integer"
         end
 
         def confirm_payment(order_id:, reference:, data: {}, settlement: nil)
@@ -308,15 +326,13 @@ module ZeroXDA
             )
           end
 
-          received_amount = Integer(amount)
-          raise ArgumentError unless received_amount.positive?
-          expected_amount = Integer(expected.fetch("amount"))
+          expected_amount = positive_integer(expected.fetch("amount"), field: "expected payment amount")
           received_provider = provider.to_s
           received_currency = currency.to_s.upcase
 
           return if received_provider == expected.fetch("provider") &&
                     received_currency == expected.fetch("currency") &&
-                    received_amount == expected_amount
+                    amount == expected_amount
 
           raise Core::Conflict.new(
             "provider payment does not match the order",
@@ -328,6 +344,15 @@ module ZeroXDA
               expected_amount: expected_amount.to_s
             }
           )
+        end
+
+        def positive_integer(value, field:)
+          number = Integer(value)
+          raise ArgumentError, "#{field} must be a positive integer" unless number.positive?
+
+          number
+        rescue ArgumentError, TypeError
+          raise ArgumentError, "#{field} must be a positive integer"
         end
 
         def enforce_purchase_quantity!(product, quantity)
