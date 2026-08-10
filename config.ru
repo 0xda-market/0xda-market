@@ -9,7 +9,6 @@ require_relative "lib/zero_x_da/market/adapters/postgres_store"
 require_relative "lib/zero_x_da/market/adapters/postgres_manual_task_store"
 require_relative "lib/zero_x_da/market/providers/manual_provider"
 require_relative "lib/zero_x_da/market/payments/mock_provider"
-require_relative "lib/zero_x_da/market/payments/fixed_rate_integer_terms"
 require_relative "lib/zero_x_da/market/payments/rack_confirmation_client"
 require_relative "lib/zero_x_da/market/transport/json_api"
 require_relative "lib/zero_x_da/market/transport/manual_api"
@@ -43,6 +42,7 @@ require_relative "lib/zero_x_da/market/marketplace/broker_order_decisions"
 require_relative "lib/zero_x_da/market/settlement/memory_store"
 require_relative "lib/zero_x_da/market/settlement/postgres_store"
 require_relative "lib/zero_x_da/market/settlement/manual_provider"
+require_relative "lib/zero_x_da/market/settlement/integer_unit_provider"
 require_relative "lib/zero_x_da/market/settlement/integration"
 
 clock = -> { Time.now.utc }
@@ -52,24 +52,26 @@ operator_token = ENV["MANUAL_PROVIDER_TOKEN"]
 database_url = ENV["DATABASE_URL"]
 mock_payment_enabled = ENV.fetch("ENABLE_MOCK_PAYMENT_PROVIDER", "0") == "1"
 mock_payment_token = ENV["MOCK_PAYMENT_PROVIDER_TOKEN"]
+market_payment_provider = ENV["MARKET_PAYMENT_PROVIDER"].to_s.strip
 manual_quote_ttl = Integer(ENV.fetch("MANUAL_QUOTE_TTL_SECONDS", "900"))
 raise "MANUAL_QUOTE_TTL_SECONDS must be positive" unless manual_quote_ttl.positive?
+raise "MARKET_PAYMENT_PROVIDER is unsupported" unless ["", "telegram_stars"].include?(market_payment_provider)
+if mock_payment_enabled && !market_payment_provider.empty?
+  raise "mock and real market payment providers cannot be enabled together"
+end
 
-payment_terms_provider = case ENV["MARKET_PAYMENT_PROVIDER"].to_s.strip
-                         when ""
-                           nil
-                         when "telegram_stars"
-                           rate = ENV["TELEGRAM_STARS_USDT_PER_STAR"].to_s.strip
-                           raise "TELEGRAM_STARS_USDT_PER_STAR is required for telegram_stars payments" if rate.empty?
+telegram_stars_rate = nil
+telegram_stars_skus = nil
+if market_payment_provider == "telegram_stars"
+  telegram_stars_rate = ENV["TELEGRAM_STARS_USDT_PER_STAR"].to_s.strip
+  raise "TELEGRAM_STARS_USDT_PER_STAR is required for telegram_stars payments" if telegram_stars_rate.empty?
 
-                           ZeroXDA::Market::Payments::FixedRateIntegerTerms.new(
-                             provider_key: "telegram_stars",
-                             currency: "XTR",
-                             usdt_per_unit: rate
-                           )
-                         else
-                           raise "MARKET_PAYMENT_PROVIDER is unsupported"
-                         end
+  telegram_stars_skus = ENV.fetch(
+    "TELEGRAM_STARS_PAYMENT_SKUS",
+    "premium_3m,premium_6m,premium_9m"
+  ).split(",").map(&:strip).reject(&:empty?).uniq
+  raise "TELEGRAM_STARS_PAYMENT_SKUS must contain at least one SKU" if telegram_stars_skus.empty?
+end
 
 if environment == "production"
   raise "mock payment provider cannot be enabled in production" if mock_payment_enabled
@@ -106,13 +108,33 @@ manual_provider = if operator_token && !operator_token.empty?
                   end
 providers = manual_provider ? { "manual.fulfillment" => manual_provider } : {}
 settlement_store = database ? ZeroXDA::Market::Settlement::PostgresStore.new(database: database) : ZeroXDA::Market::Settlement::MemoryStore.new
-settlement_provider = if operator_token && !operator_token.empty?
-                        ZeroXDA::Market::Settlement::ManualProvider.new(
-                          clock: clock, store: settlement_store,
-                          variable_fee_bps: Integer(ENV.fetch("MARKETPLACE_VARIABLE_FEE_BPS", ZeroXDA::Market::Pricing::ProfitabilityPolicy::DEFAULT_VARIABLE_FEE_BPS.to_s)),
-                          fixed_cost_usdt: ENV.fetch("MARKETPLACE_FIXED_COST_USDT", ZeroXDA::Market::Pricing::ProfitabilityPolicy::DEFAULT_FIXED_COST_USDT.to_s("F")),
-                          tolerance_bps: Integer(ENV.fetch("MANUAL_SETTLEMENT_TOLERANCE_BPS", "0")))
+settlement_options = {
+  variable_fee_bps: Integer(ENV.fetch("MARKETPLACE_VARIABLE_FEE_BPS", ZeroXDA::Market::Pricing::ProfitabilityPolicy::DEFAULT_VARIABLE_FEE_BPS.to_s)),
+  fixed_cost_usdt: ENV.fetch("MARKETPLACE_FIXED_COST_USDT", ZeroXDA::Market::Pricing::ProfitabilityPolicy::DEFAULT_FIXED_COST_USDT.to_s("F"))
+}
+manual_settlement_provider = if operator_token && !operator_token.empty? && market_payment_provider.empty?
+                               ZeroXDA::Market::Settlement::ManualProvider.new(
+                                 clock: clock,
+                                 store: settlement_store,
+                                 **settlement_options,
+                                 tolerance_bps: Integer(ENV.fetch("MANUAL_SETTLEMENT_TOLERANCE_BPS", "0"))
+                               )
+                             end
+settlement_provider = case market_payment_provider
+                      when "telegram_stars"
+                        ZeroXDA::Market::Settlement::IntegerUnitProvider.new(
+                          key: "telegram_stars",
+                          currency: "XTR",
+                          usdt_per_unit: telegram_stars_rate,
+                          allowed_skus: telegram_stars_skus,
+                          clock: clock,
+                          store: settlement_store,
+                          **settlement_options
+                        )
+                      else
+                        manual_settlement_provider
                       end
+payment_terms_provider = settlement_provider if market_payment_provider == "telegram_stars"
 settlement_cost = settlement_provider&.default_cost || ZeroXDA::Market::Core::Contracts::CostResult.new(variable_fee_bps: 0, fixed_cost_usdt: 0)
 profitability = ZeroXDA::Market::Pricing::ProfitabilityPolicy.new(
   minimum_margin_bps: Integer(ENV.fetch("MARKETPLACE_MIN_MARGIN_BPS", ZeroXDA::Market::Pricing::ProfitabilityPolicy::DEFAULT_MINIMUM_MARGIN_BPS.to_s)),
@@ -146,7 +168,8 @@ operator_api = nil
 if manual_provider
   operator_api = ZeroXDA::Market::Transport::ManualAPI.new(provider: manual_provider, token: operator_token,
                                                             identity_service: identity_service, catalog: catalog,
-                                                            marketplace: marketplace, settlement_provider: settlement_provider,
+                                                            marketplace: marketplace,
+                                                            settlement_provider: manual_settlement_provider,
                                                             broker_earnings: broker_earnings)
   applications["/operator"] = operator_api
 end
