@@ -159,7 +159,7 @@ module ZeroXDA
             store.replace(settled, expected_version: current.version)
             append_event(settled, store: store)
             settled
-          end.then { |record| result_for(record) }
+          end
         rescue TypeError
           raise ArgumentError, "settlement amount must be a positive integer"
         end
