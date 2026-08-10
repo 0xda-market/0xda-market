@@ -9,6 +9,7 @@ require_relative "lib/zero_x_da/market/adapters/postgres_store"
 require_relative "lib/zero_x_da/market/adapters/postgres_manual_task_store"
 require_relative "lib/zero_x_da/market/providers/manual_provider"
 require_relative "lib/zero_x_da/market/payments/mock_provider"
+require_relative "lib/zero_x_da/market/payments/fixed_rate_integer_terms"
 require_relative "lib/zero_x_da/market/payments/rack_confirmation_client"
 require_relative "lib/zero_x_da/market/transport/json_api"
 require_relative "lib/zero_x_da/market/transport/manual_api"
@@ -53,6 +54,22 @@ mock_payment_enabled = ENV.fetch("ENABLE_MOCK_PAYMENT_PROVIDER", "0") == "1"
 mock_payment_token = ENV["MOCK_PAYMENT_PROVIDER_TOKEN"]
 manual_quote_ttl = Integer(ENV.fetch("MANUAL_QUOTE_TTL_SECONDS", "900"))
 raise "MANUAL_QUOTE_TTL_SECONDS must be positive" unless manual_quote_ttl.positive?
+
+payment_terms_provider = case ENV["MARKET_PAYMENT_PROVIDER"].to_s.strip
+                         when ""
+                           nil
+                         when "telegram_stars"
+                           rate = ENV["TELEGRAM_STARS_USDT_PER_STAR"].to_s.strip
+                           raise "TELEGRAM_STARS_USDT_PER_STAR is required for telegram_stars payments" if rate.empty?
+
+                           ZeroXDA::Market::Payments::FixedRateIntegerTerms.new(
+                             provider_key: "telegram_stars",
+                             currency: "XTR",
+                             usdt_per_unit: rate
+                           )
+                         else
+                           raise "MARKET_PAYMENT_PROVIDER is unsupported"
+                         end
 
 if environment == "production"
   raise "mock payment provider cannot be enabled in production" if mock_payment_enabled
@@ -117,7 +134,8 @@ broker_orders = manual_provider && ZeroXDA::Market::BrokerOrders::Service.new(st
 recipient_resolver = ZeroXDA::Market::Marketplace::RecipientResolver.new(identities: identity_store)
 marketplace = ZeroXDA::Market::Marketplace::Service.new(kernel: kernel, catalog: catalog, pricing: pricing, listings: listings,
                                                         broker_orders: broker_orders, settlement_provider: settlement_provider,
-                                                        recipient_resolver: recipient_resolver)
+                                                        recipient_resolver: recipient_resolver,
+                                                        payment_terms_provider: payment_terms_provider)
 public_api = ZeroXDA::Market::Transport::JSONAPI.new(kernel: kernel, token: public_token, readiness: -> { store.healthy? },
                                                      identity_service: identity_service, admin_service: admin_service,
                                                      catalog: catalog, pricing: pricing, localization: localization,
