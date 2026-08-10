@@ -46,8 +46,8 @@ module ZeroXDA
 
         # Fulfillment makes an earning economically earned, but a payment rail
         # may expose funds to the market only after a provider maturity window.
-        # A future not_before keeps the earning pending with a durable maturity
-        # timestamp; it is promoted lazily once that timestamp is reached.
+        # Once a maturity boundary is recorded it is monotonic: a later call may
+        # extend it, but can never make the earning payout-eligible earlier.
         def make_available(order_id:, not_before: nil)
           @store.transaction do |store|
             current = store.find_by_order(order_id) || raise(Core::NotFound.new("broker_earning", order_id))
@@ -55,7 +55,8 @@ module ZeroXDA
             raise Core::Conflict.new("broker earning is not pending", code: "earning_not_pending") unless current.state == "pending"
 
             now = current_time
-            threshold = not_before && normalized_time(not_before, field: "not_before")
+            requested = not_before && normalized_time(not_before, field: "not_before")
+            threshold = [current.available_at, requested].compact.max
             if threshold && threshold > now
               next current if current.available_at == threshold
 
@@ -69,11 +70,10 @@ module ZeroXDA
               )
             end
 
-            maturity = current.available_at || threshold || now
             store.replace(
               Earning.new(**current.to_h.merge(
                 state: "available",
-                available_at: maturity,
+                available_at: threshold || now,
                 updated_at: now,
                 version: current.version + 1
               )),
