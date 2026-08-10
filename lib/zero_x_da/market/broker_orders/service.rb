@@ -96,7 +96,10 @@ module ZeroXDA
                                   updated_at: current_time, version: latest.version + 1),
                           expected_version: latest.version)
           end
-          earning = @earnings&.make_available(order_id: order.id)
+          funds_available_at = if @kernel.respond_to?(:settlement_funds_available_at)
+                                 @kernel.settlement_funds_available_at(order.id)
+                               end
+          earning = @earnings&.make_available(order_id: order.id, not_before: funds_available_at)
           entry(completed, order: order, context: context, earning: earning, changed: true)
         end
 
