@@ -13,6 +13,7 @@ class IntegerUnitSettlementTest < Minitest::Test
       currency: "XTR",
       usdt_per_unit: "0.013",
       allowed_skus: %w[premium_3m premium_6m premium_9m],
+      funds_hold_seconds: 21,
       clock: @clock
     )
   end
@@ -61,6 +62,7 @@ class IntegerUnitSettlementTest < Minitest::Test
     end
     assert_equal "payment_provider_mismatch", mismatch.code
 
+    confirmed_at = @clock.call
     settled = @provider.confirm(
       order_id: order.id,
       reference: "charge-1",
@@ -72,6 +74,8 @@ class IntegerUnitSettlementTest < Minitest::Test
     assert settled.settled?
     assert_equal "charge-1", settled.external_reference
     assert_equal BigDecimal("12.506"), settled.received_usdt
+    assert_equal 21, settled.provider_data.fetch("funds_hold_seconds")
+    assert_equal confirmed_at + 21, @provider.funds_available_at(order_id: order.id)
 
     repeated = @provider.confirm(
       order_id: order.id,
@@ -81,6 +85,7 @@ class IntegerUnitSettlementTest < Minitest::Test
       currency: "XTR"
     )
     assert_equal settled.id, repeated.id
+    assert_equal confirmed_at + 21, @provider.funds_available_at(order_id: order.id)
 
     duplicate_charge = assert_raises(ZeroXDA::Market::Core::Conflict) do
       @provider.confirm(
