@@ -54,6 +54,10 @@ class WebAppListedVisibilityTest < Minitest::Test
 
       amount_usdt
     end
+
+    def present_client_price(amount_usdt:, currency:)
+      convert(amount_usdt: amount_usdt, currency: currency)
+    end
   end
 
   def test_keeps_a_listed_product_visible_without_an_executable_client_price
