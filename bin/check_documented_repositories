@@ -3,6 +3,7 @@ set -euo pipefail
 
 root="${1:-.}"
 organization="${DOCUMENTED_REPOSITORY_OWNER:-0xda-market}"
+current_repository="${GITHUB_REPOSITORY:-}"
 
 mapfile -d '' files < <(
   find "$root" -type f \
@@ -70,10 +71,21 @@ for repository_url in "${repository_urls[@]}"; do
     continue
   fi
 
-  if [[ "$status" != '200' ]]; then
-    echo "organization repository link is not canonical or does not resolve: ${repository_url} (GitHub API HTTP ${status})" >&2
-    failed=1
+  if [[ "$status" == '200' ]]; then
+    continue
   fi
+
+  # GitHub Actions GITHUB_TOKEN is scoped to the workflow repository. GitHub
+  # intentionally reports private sibling repositories as 404 to that token.
+  # Keep canonical/stale-slug validation strict, but do not misclassify this
+  # authorization boundary as a broken documentation link.
+  if [[ "$status" == '404' && -n "${GITHUB_ACTIONS:-}" && -n "$current_repository" && "$slug" != "$current_repository" ]]; then
+    echo "repository reachability not verifiable with repo-scoped GITHUB_TOKEN: ${repository_url}" >&2
+    continue
+  fi
+
+  echo "organization repository link is not canonical or does not resolve: ${repository_url} (GitHub API HTTP ${status})" >&2
+  failed=1
 done
 
 if (( failed != 0 )); then

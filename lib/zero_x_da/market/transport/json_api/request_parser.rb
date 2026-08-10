@@ -35,7 +35,13 @@ module ZeroXDA
 
           def requested_currency(request)
             value = request.params["currency"].to_s.strip.upcase
-            return Localization::Service::BASE_CURRENCY if value.empty? || @localization.nil?
+            return Localization::Service::BASE_CURRENCY if @localization.nil?
+
+            if value.empty?
+              language_code = request.params["locale"] || request.params["language_code"]
+              return @localization.resolve(language_code: language_code).currency
+            end
+
             unless @localization.supported_currency?(value)
               raise ArgumentError, "currency is not supported: #{value}"
             end

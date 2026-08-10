@@ -45,18 +45,39 @@ class WebAppBootstrapAPITest < Minitest::Test
   end
 
   class Localization
+    Resolved = Struct.new(:currency, keyword_init: true)
+
     def locale_for(value)
-      value.to_s == "uk_UA" ? "uk_UA" : "en_US"
+      value.to_s.start_with?("uk") ? "uk_UA" : "en_US"
+    end
+
+    def resolve(language_code:, currency: nil)
+      requested = currency.to_s.strip.upcase
+      return Resolved.new(currency: requested) unless requested.empty?
+
+      Resolved.new(currency: locale_for(language_code) == "uk_UA" ? "UAH" : "USDT")
     end
 
     def supported_currency?(value)
-      value == "USDT"
+      %w[USDT UAH].include?(value)
     end
 
     def convert(amount_usdt:, currency:)
-      raise ArgumentError, "unsupported test currency" unless currency == "USDT"
+      case currency
+      when "USDT"
+        amount_usdt
+      when "UAH"
+        amount_usdt * BigDecimal("40")
+      else
+        raise ArgumentError, "unsupported test currency"
+      end
+    end
 
-      amount_usdt
+    def present_client_price(amount_usdt:, currency:)
+      exact = convert(amount_usdt: amount_usdt, currency: currency)
+      return exact unless currency == "UAH"
+
+      BigDecimal((exact / BigDecimal("50")).ceil.to_s) * BigDecimal("50")
     end
   end
 
@@ -109,6 +130,18 @@ class WebAppBootstrapAPITest < Minitest::Test
     refute product.fetch("attributes").key?("updated_by_user_id")
     refute product.fetch("attributes").key?("price_updated_by_user_id")
     refute product.dig("attributes", "price").key?("edited_by_user_id")
+    assert_equal ["uk_UA"], @catalog.locales
+  end
+
+  def test_derives_uah_from_ukrainian_locale_and_applies_smart_rounding
+    response = @client.get("/v1/webapp/bootstrap?locale=uk")
+
+    assert_equal 200, response.status
+    document = JSON.parse(response.body)
+    assert_equal "uk_UA", document.dig("meta", "locale")
+    assert_equal "UAH", document.dig("meta", "currency")
+    assert_equal "550.0", document.dig("data", 0, "attributes", "price", "amount")
+    assert_equal "13.25", document.dig("data", 0, "attributes", "price", "amount_usdt")
     assert_equal ["uk_UA"], @catalog.locales
   end
 
