@@ -44,6 +44,13 @@ class BrokerEarningsMaturityTest < Minitest::Test
 
     assert_equal "pending", earning.state
     assert_equal maturity, earning.available_at
+
+    # A retry from older/internal code that omits not_before must not shorten a
+    # durable provider hold that was already recorded.
+    retried = @service.make_available(order_id: "order-1")
+    assert_equal "pending", retried.state
+    assert_equal maturity, retried.available_at
+
     balance = @service.balance(actor_user_id: @seller_id)
     assert_equal BigDecimal("9.25"), balance.pending
     assert_equal BigDecimal("0"), balance.available
