@@ -10,6 +10,8 @@ module ZeroXDA
       SettlementProviders = Struct.new(:primary, :manual, :payment_terms, keyword_init: true)
 
       module SettlementProviderFactory
+        TELEGRAM_STARS_MINIMUM_REWARD_HOLD_SECONDS = 21 * 24 * 60 * 60
+
         module_function
 
         def build(key:, env:, clock:, store:, operator_token:)
@@ -33,11 +35,22 @@ module ZeroXDA
             ).split(",").map(&:strip).reject(&:empty?).uniq
             raise "TELEGRAM_STARS_PAYMENT_SKUS must contain at least one SKU" if skus.empty?
 
+            reward_hold_seconds = Integer(
+              env.fetch(
+                "TELEGRAM_STARS_REWARD_HOLD_SECONDS",
+                TELEGRAM_STARS_MINIMUM_REWARD_HOLD_SECONDS.to_s
+              )
+            )
+            if reward_hold_seconds < TELEGRAM_STARS_MINIMUM_REWARD_HOLD_SECONDS
+              raise "TELEGRAM_STARS_REWARD_HOLD_SECONDS must be at least 21 days"
+            end
+
             provider = Settlement::IntegerUnitProvider.new(
               key: "telegram_stars",
               currency: "XTR",
               usdt_per_unit: rate,
               allowed_skus: skus,
+              funds_hold_seconds: reward_hold_seconds,
               clock: clock,
               store: store,
               **common
