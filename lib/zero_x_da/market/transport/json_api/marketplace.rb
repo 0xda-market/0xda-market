@@ -45,6 +45,20 @@ module ZeroXDA
             resource_response(200, present_marketplace_order(result))
           end
 
+          def confirm_marketplace_payment(request, id:)
+            body = @request_parser.request_document(request)
+            result = @marketplace.confirm_customer_payment(
+              customer_user_id: body.fetch("actor_user_id"),
+              order_id: id,
+              reference: body.fetch("reference"),
+              provider: body.fetch("provider"),
+              amount: body.fetch("amount"),
+              currency: body.fetch("currency"),
+              data: body.fetch("data", {})
+            )
+            resource_response(200, present_marketplace_order(result))
+          end
+
           def execute_marketplace_order(request, id:)
             body = @request_parser.request_document(request)
             result = @marketplace.execute_order(
@@ -97,6 +111,11 @@ module ZeroXDA
             quote_match = path.match(%r{\A/v1/market/quotes/([^/]+)/accept\z})
             if method == "POST" && quote_match && available?(:marketplace)
               return route(:accept_marketplace_quote, id: quote_match[1])
+            end
+
+            payment_match = path.match(%r{\A/v1/market/orders/([^/]+)/payment/confirm\z})
+            if method == "POST" && payment_match && available?(:marketplace)
+              return route(:confirm_marketplace_payment, id: payment_match[1])
             end
 
             order_match = path.match(%r{\A/v1/market/orders/([^/]+)\z})
