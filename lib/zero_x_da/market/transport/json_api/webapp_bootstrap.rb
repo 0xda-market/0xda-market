@@ -84,11 +84,20 @@ module ZeroXDA
           end
 
           def public_webapp_price(price, amount_usdt:, currency:)
-            present_effective_client_price(
+            presented = present_effective_client_price(
               price,
               amount_usdt: amount_usdt,
               currency: currency
-            ).reject do |key, _value|
+            )
+            if @localization
+              presented = presented.merge(
+                "amount" => decimal_string(
+                  @localization.present_client_price(amount_usdt: amount_usdt, currency: currency)
+                )
+              )
+            end
+
+            presented.reject do |key, _value|
               key == "edited_by_user_id"
             end
           end
