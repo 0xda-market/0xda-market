@@ -18,6 +18,7 @@ import os
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
+from math import gcd
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,13 @@ def _int(value: Any, field: str) -> int:
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field} must be an integer") from exc
     return parsed
+
+
+def _exact_unit_amount(amount: int, users: int) -> int | str:
+    if amount % users == 0:
+        return amount // users
+    divisor = gcd(amount, users)
+    return f"{amount // divisor}/{users // divisor}"
 
 
 def _premium_dict(option: Any) -> dict[str, Any]:
@@ -65,7 +73,7 @@ def _validate_premium(option: dict[str, Any]) -> dict[str, Any]:
         "months": months,
         "currency": currency,
         "amount_minor": amount,
-        "unit_amount_minor": str(amount / users) if amount % users else amount // users,
+        "unit_amount_minor": _exact_unit_amount(amount, users),
         "offer_kind": "direct_gift" if users == 1 else "multi_gift_candidate",
         "store_product": option.get("store_product"),
         "store_quantity": option.get("store_quantity"),
@@ -113,18 +121,25 @@ def min_topup_cost(target_stars: int, packages: list[dict[str, Any]]) -> dict[st
     for current in range(limit + 1):
         if costs[current] is None:
             continue
+        current_count = counts[current]
+        if current_count is None:
+            raise RuntimeError("top-up dynamic-program state is inconsistent")
         for index, package in enumerate(normalized):
             nxt = current + package["stars"]
             if nxt > limit:
                 continue
             candidate_cost = costs[current] + package["amount_minor"]
-            candidate_count = counts[current] + 1
+            candidate_count = current_count + 1
             existing_cost = costs[nxt]
             existing_count = counts[nxt]
             if (
                 existing_cost is None
                 or candidate_cost < existing_cost
-                or (candidate_cost == existing_cost and candidate_count < existing_count)
+                or (
+                    candidate_cost == existing_cost
+                    and existing_count is not None
+                    and candidate_count < existing_count
+                )
             ):
                 costs[nxt] = candidate_cost
                 counts[nxt] = candidate_count
