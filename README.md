@@ -28,7 +28,7 @@ Dependencies point inward:
 - providers implement the generic `key`, `quote` and `execute` port;
 - stores implement persistence ports consumed by domain/application services;
 - external identity providers are represented by generic identity records;
-- concrete channels such as Telegram belong in dedicated adapter services;
+- concrete channels belong in dedicated adapter services;
 - browser UI and state live in the peer `0xda-market/webapp-core` repository;
 - `config.ru` is the composition root and serves backend APIs, not channel webhooks or browser assets.
 
@@ -54,7 +54,7 @@ and enforced by architecture tests.
 - exact localized conversion followed by currency-aware upward presentation;
 - broker-owned asset listings with exact quantity and price amounts;
 - PostgreSQL and in-memory adapters;
-- health-gated development VPS deployment with Caddy HTTPS and bot routing.
+- health-gated development VPS deployment with HTTPS and channel routing.
 
 ## Domain lifecycle
 
@@ -77,8 +77,8 @@ provider.execute(order:, idempotency_key:)
 ```
 
 `quote` returns `Core::Contracts::QuoteResult`. `execute` returns either
-`ExecutionResult` or `PendingResult`. Adding TON, Binance, Ethereum or another
-provider must not require changing `Core::Kernel`.
+`ExecutionResult` or `PendingResult`. Adding a new concrete fulfillment adapter
+must not require changing `Core::Kernel`.
 
 ## Users and external identities
 
@@ -87,8 +87,8 @@ provider must not require changing `Core::Kernel`.
 
 ```text
 market.users.id
-    ├── provider=telegram, provider_user_id=...
-    ├── provider=github, provider_user_id=...
+    ├── provider=channel.example, provider_user_id=...
+    ├── provider=identity.example, provider_user_id=...
     └── provider=<future adapter>, provider_user_id=...
 ```
 
@@ -99,10 +99,9 @@ curl -sS http://localhost:9292/v1/auth/external \
   -H 'authorization: Bearer client-secret' \
   -H 'content-type: application/json' \
   -d '{
-    "provider": "telegram",
+    "provider": "channel.example",
     "provider_user_id": "123456789",
     "provider_data": {
-      "chat_id": "123456789",
       "username": "example",
       "language_code": "uk"
     }
@@ -121,9 +120,9 @@ curl -sS http://localhost:9292/operator/v1/auth/external \
   -H 'authorization: Bearer operator-secret' \
   -H 'content-type: application/json' \
   -d '{
-    "provider": "telegram",
+    "provider": "channel.example",
     "provider_user_id": "123456789",
-    "provider_data": {"chat_id":"123456789"}
+    "provider_data": {"username":"example"}
   }'
 ```
 
@@ -153,7 +152,7 @@ curl -sS http://localhost:9292/v1/admin/users/set-admin \
   }'
 ```
 
-External usernames, chat IDs and profile links are resolved by the channel
+External usernames, external IDs and profile links are resolved by the channel
 adapter before this request reaches core.
 
 ## Product catalog and pricing
@@ -177,14 +176,12 @@ without allowing an expensive competitor to push the buyer price upward. The
 worker may create or raise a price but does not automatically lower a profitable
 price. See [`docs/architecture/automatic-pricing.md`](docs/architecture/automatic-pricing.md).
 
-The initial marketable catalog contains:
+The marketable catalog is data owned by database migrations and product
+configuration. Core treats product SKUs, provider metadata and fulfillment
+metadata as domain data rather than channel implementation behavior.
 
-- Telegram Premium for 3, 6 and 12 months;
-- Telegram Stars 500, 1000 and 3000;
-- TON, BTC and ETH.
-
-Currency products `USDT`, `USD`, `UAH` and `RUB` are non-marketable catalog rows
-whose prices represent USDT paid per unit.
+Currency products are non-marketable catalog rows whose prices represent USDT
+paid per unit.
 
 ```sh
 curl -sS 'http://localhost:9292/v1/products?locale=uk_UA' \
@@ -199,8 +196,8 @@ curl -sS 'http://localhost:9292/v1/currencies?locale=uk_UA' \
 Users with role `broker` or `admin` can publish one active listing per asset and
 quote currency. Listings store exact decimal quantity and unit price values,
 remain owned by the internal `market.users.id`, and use optimistic concurrency
-for edits and withdrawal. Telegram and other channel adapters authenticate the
-external user before calling this provider-neutral contract.
+for edits and withdrawal. Channel adapters authenticate the external user before
+calling this provider-neutral contract.
 
 The browser never receives database credentials or an internal user ID. It
 calls its signed host adapter, which supplies the verified actor ID to core.
@@ -217,6 +214,27 @@ calls its signed host adapter, which supplies the verified actor ID to core.
 
 The operator transport depends on a task-service port, not on the concrete
 provider class. Production stores tasks in PostgreSQL.
+
+## Provider payment settlement
+
+Core supports provider-neutral settlement terms and generic integer-unit payment
+composition. Concrete provider identifiers, unit codes, valuations, SKU policy,
+maturity delays, SDKs, protocol methods, and provider-side event validation are
+owned by adapter or deployment configuration, not by core defaults.
+
+See
+[`docs/architecture/provider-payment-settlement.md`](docs/architecture/provider-payment-settlement.md).
+
+## Research and documentation ownership
+
+Core owns only service-specific, provider-neutral implementation and architecture
+documentation. Cross-repository research, provider-specific research, economic
+observations, SDK experiments, protocol probes, and provider-specific operating
+guidance belong in `0xda-market/docs` or the owning adapter repository.
+
+Research and research-tooling directories are forbidden in this repository. The
+boundary is enforced by `test/architecture_boundaries_test.rb` and the required
+CI path.
 
 ## Run locally
 
@@ -251,10 +269,10 @@ reduces the broker's promised ask and reservation profitability is revalidated
 against the actual selected broker before inventory mutation.
 
 FX acquisition is step 0 of localized pricing. A separate `fx-refresh` process
-reads Coinbase's public USDT exchange-rate snapshot every five minutes, inverts
-it into the core `USDT per unit` contract and appends the complete set with
-provider provenance. API requests use only persisted rates. Non-USDT conversion
-fails closed when the latest rate exceeds `FX_RATE_MAX_AGE_SECONDS` (one hour by
+reads an outward USDT exchange-rate snapshot every five minutes, inverts it into
+the core `USDT per unit` contract and appends the complete set with provider
+provenance. API requests use only persisted rates. Non-USDT conversion fails
+closed when the latest rate exceeds `FX_RATE_MAX_AGE_SECONDS` (one hour by
 default); client-facing smart rounding then runs as step 1. See
 [`docs/architecture/fx-rate-refresh.md`](docs/architecture/fx-rate-refresh.md).
 
@@ -267,7 +285,7 @@ curl -sS http://localhost:9292/v1/intents \
   -d '{
     "capability": "manual.fulfillment",
     "payload": {"action": "deliver", "item": "example"},
-    "context": {"customer_id": "customer-1"}
+    "context": {"client_id": "client-1"}
   }'
 
 curl -sS -X POST http://localhost:9292/v1/intents/INTENT_ID/quotes \
@@ -335,8 +353,8 @@ CI runs:
 The VPS is the canonical runtime:
 
 - after green CI, `master` stages or refreshes `development`;
-- Caddy serves `https://0xda-market.nilx.one` and forwards `/bot/*` to the client
-  bot over the private edge network;
+- the shared edge serves `https://0xda-market.nilx.one` and routes channel paths
+to their adapter services over the private network;
 - active refreshes are health-gated and attempt to restart the previous release
   on failure;
 - production directories remain reserved, but production deployment is not
