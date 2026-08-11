@@ -9,33 +9,33 @@ class IntegerUnitSettlementTest < Minitest::Test
   def setup
     @clock = MutableClock.new
     @provider = ZeroXDA::Market::Settlement::IntegerUnitProvider.new(
-      key: "telegram_stars",
-      currency: "XTR",
+      key: "provider.integer",
+      currency: "TOK",
       usdt_per_unit: "0.013",
-      allowed_skus: %w[premium_3m premium_6m premium_9m],
+      allowed_skus: %w[sku_a sku_b],
       funds_hold_seconds: 21,
       clock: @clock
     )
   end
 
   def test_quotes_integer_units_upward_and_restricts_products
-    terms = @provider.quote(amount_usdt: "12.50", sku: "premium_3m")
+    terms = @provider.quote(amount_usdt: "12.50", sku: "sku_a")
 
-    assert_equal "telegram_stars", terms.fetch("provider")
-    assert_equal "XTR", terms.fetch("currency")
+    assert_equal "provider.integer", terms.fetch("provider")
+    assert_equal "TOK", terms.fetch("currency")
     assert_equal "962", terms.fetch("amount")
     assert_equal "12.5", terms.dig("valuation", "amount_usdt")
     assert_equal "0.013", terms.dig("valuation", "usdt_per_unit")
     assert_equal "ceiling", terms.dig("valuation", "rounded")
 
     error = assert_raises(ZeroXDA::Market::Core::Conflict) do
-      @provider.quote(amount_usdt: "12.50", sku: "stars_500")
+      @provider.quote(amount_usdt: "12.50", sku: "sku_c")
     end
     assert_equal "payment_method_unavailable", error.code
   end
 
   def test_requires_exact_provider_evidence_and_is_idempotent
-    terms = @provider.quote(amount_usdt: "12.50", sku: "premium_3m")
+    terms = @provider.quote(amount_usdt: "12.50", sku: "sku_a")
     order = Order.new(
       id: "order-1",
       payment: {
@@ -55,9 +55,9 @@ class IntegerUnitSettlementTest < Minitest::Test
       @provider.confirm(
         order_id: order.id,
         reference: "charge-0",
-        provider: "telegram_stars",
+        provider: "provider.integer",
         amount: 961,
-        currency: "XTR"
+        currency: "TOK"
       )
     end
     assert_equal "payment_provider_mismatch", mismatch.code
@@ -66,9 +66,9 @@ class IntegerUnitSettlementTest < Minitest::Test
     settled = @provider.confirm(
       order_id: order.id,
       reference: "charge-1",
-      provider: "telegram_stars",
+      provider: "provider.integer",
       amount: 962,
-      currency: "XTR",
+      currency: "TOK",
       data: { "source" => "authoritative-provider-event" }
     )
     assert settled.settled?
@@ -80,9 +80,9 @@ class IntegerUnitSettlementTest < Minitest::Test
     repeated = @provider.confirm(
       order_id: order.id,
       reference: "charge-1",
-      provider: "telegram_stars",
+      provider: "provider.integer",
       amount: 962,
-      currency: "XTR"
+      currency: "TOK"
     )
     assert_equal settled.id, repeated.id
     assert_equal confirmed_at + 21, @provider.funds_available_at(order_id: order.id)
@@ -91,16 +91,16 @@ class IntegerUnitSettlementTest < Minitest::Test
       @provider.confirm(
         order_id: order.id,
         reference: "charge-2",
-        provider: "telegram_stars",
+        provider: "provider.integer",
         amount: 962,
-        currency: "XTR"
+        currency: "TOK"
       )
     end
     assert_equal "payment_reference_mismatch", duplicate_charge.code
   end
 
   def test_expired_settlement_cannot_be_confirmed
-    terms = @provider.quote(amount_usdt: "1", sku: "premium_3m")
+    terms = @provider.quote(amount_usdt: "1", sku: "sku_a")
     order = Order.new(
       id: "order-expired",
       payment: {
@@ -118,9 +118,9 @@ class IntegerUnitSettlementTest < Minitest::Test
       @provider.confirm(
         order_id: order.id,
         reference: "charge-expired",
-        provider: "telegram_stars",
+        provider: "provider.integer",
         amount: 77,
-        currency: "XTR"
+        currency: "TOK"
       )
     end
     assert_equal "payment_expired", error.code
