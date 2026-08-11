@@ -65,6 +65,8 @@ jobs:
         with:
           ruby-version: "3.3.11"
           bundler-cache: true
+      - name: Validate core architecture boundary
+        run: bundle exec ruby -Itest test/architecture_boundaries_test.rb
       - name: Run integration tests
         id: integration_tests
         run: |
