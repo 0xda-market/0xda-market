@@ -1,14 +1,14 @@
 # WebApp runtime architecture
 
-The WebApp surface has three peer repositories with one dependency direction:
+The browser surface follows one dependency direction:
 
 ```text
-telegram-bot/webapp -> webapp-core -> core JSON APIs
+channel host -> reusable browser application -> core JSON APIs
 ```
 
 [webapp-core](https://github.com/0xda-market/webapp-core) owns the browser-native catalog engine, immutable snapshot state, local search and pagination, checkout state machine and reusable role-driven UI.
 
-[telegram-bot](https://github.com/0xda-market/telegram-bot) owns the Telegram SDK host, signed `initData` transport, HTML/CSS shell, BFF and deployment entry point. It consumes an exact immutable `webapp-core` revision.
+A channel host owns host SDK integration, signed transport, HTML/CSS shell, BFF behavior and deployment entry points. It consumes an exact immutable `webapp-core` revision.
 
 `core` owns only provider-agnostic domain and backend contracts. It does not package or serve browser modules or a standalone WebApp.
 
@@ -31,4 +31,4 @@ The public snapshot excludes internal audit identities. Browsing state is not se
 
 ## Delivery contract
 
-Core serves JSON APIs only. Browser assets are released from `webapp-core` and mounted by a channel host. Production hosts must pin an immutable commit or released package version; default-branch URLs are not a supported dependency.
+Core serves JSON APIs only. Browser assets are released from `webapp-core` and mounted by an external channel host. Production hosts must pin an immutable commit or released package version; default-branch URLs are not a supported dependency.
