@@ -7,7 +7,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from probe import analyze, min_topup_cost  # noqa: E402
+from probe import analyze, build_sourcing_quotes, min_topup_cost  # noqa: E402
 
 
 class TelegramPremiumSourcingProbeTest(unittest.TestCase):
@@ -69,6 +69,56 @@ class TelegramPremiumSourcingProbeTest(unittest.TestCase):
         offer = report["premium_options"][0]
         self.assertEqual("multi_gift_candidate", offer["offer_kind"])
         self.assertEqual("1501/5", offer["unit_amount_minor"])
+
+    def test_native_offer_normalizes_into_comparable_sourcing_quote(self):
+        quotes = build_sourcing_quotes(
+            premium_options=[
+                {"users": 1, "months": 3, "currency": "uah", "amount_minor": 49_900},
+                {"users": 2, "months": 6, "currency": "UAH", "amount_minor": 129_900},
+            ],
+            observed_at="2026-08-11T05:00:00+00:00",
+            region="ua",
+        )
+
+        self.assertEqual(
+            {
+                "schema": "sourcing-quote.v1",
+                "provider": "telegram_native",
+                "region": "UA",
+                "currency": "UAH",
+                "sku": "premium_3m",
+                "quantity": 1,
+                "acquisition_price_minor": 49_900,
+                "unit_acquisition_price_minor": 49_900,
+                "offer_kind": "direct_gift",
+                "observed_at": "2026-08-11T05:00:00+00:00",
+            },
+            quotes[0],
+        )
+        self.assertEqual("premium_6m", quotes[1]["sku"])
+        self.assertEqual(2, quotes[1]["quantity"])
+        self.assertEqual("64950", str(quotes[1]["unit_acquisition_price_minor"]))
+
+    def test_xtr_offer_is_not_mislabeled_as_native_sourcing_quote(self):
+        quotes = build_sourcing_quotes(
+            premium_options=[
+                {"users": 1, "months": 3, "currency": "XTR", "amount_minor": 1_000},
+            ],
+            observed_at="2026-08-11T05:00:00+00:00",
+            region="UA",
+        )
+
+        self.assertEqual([], quotes)
+
+    def test_sourcing_quote_region_is_operator_supplied_country_context(self):
+        with self.assertRaisesRegex(ValueError, "two-letter country code"):
+            build_sourcing_quotes(
+                premium_options=[
+                    {"users": 1, "months": 3, "currency": "UAH", "amount_minor": 49_900},
+                ],
+                observed_at="2026-08-11T05:00:00+00:00",
+                region="Ukraine",
+            )
 
     def test_probe_source_contains_no_payment_or_invoice_submission_calls(self):
         source = (HERE / "probe.py").read_text(encoding="utf-8")
