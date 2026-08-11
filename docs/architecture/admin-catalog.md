@@ -7,7 +7,7 @@ The administrator catalog API exposes the complete product model without adding 
 - `market.products` owns locale-neutral state: SKU, short name, status, position, marketability, metadata and audit/version fields.
 - `market.product_localizations` owns user-facing copy keyed by `(product_sku, locale)`.
 - `market.product_prices` remains the separate append-only price history. Product editing never writes a price.
-- Telegram or another channel validates its external session and supplies the resolved internal actor UUID.
+- A channel adapter validates its external session and supplies the resolved internal actor UUID.
 - Core verifies that actor through `Identity::AdminService`; a browser-supplied role is never trusted.
 
 ## API
@@ -27,12 +27,12 @@ The response includes active, inactive, marketable and non-marketable products. 
   "actor_user_id": "<uuid>",
   "version": 3,
   "attributes": {
-    "short_name": "Premium · 3m",
+    "short_name": "Subscription · 3m",
     "status": "active",
     "position": 1,
     "marketable": true,
     "metadata": {
-      "family": "telegram_premium",
+      "family": "subscription",
       "duration_months": 3
     }
   }
@@ -48,8 +48,8 @@ Only supplied attributes change. The SKU, price snapshot and creation timestamp 
 ```json
 {
   "actor_user_id": "<uuid>",
-  "full_name": "Telegram Premium на 3 місяці",
-  "button_label": "Premium · 3 міс.",
+  "full_name": "Subscription for 3 months",
+  "button_label": "Subscription · 3m",
   "version": 2
 }
 ```
