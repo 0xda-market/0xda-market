@@ -10,7 +10,7 @@ project:
 
 repositories:
   core:
-    slug: 0xda-market/0xda-market
+    slug: 0xda-market/core
     role: provider_agnostic_core_api
     runtime:
       language: ruby
@@ -22,10 +22,45 @@ repositories:
         database: postgresql
         schema: market
   client_bot:
-    slug: 0xda-market/0xda-market-bot
-    role: telegram_client_adapter
+    slug: 0xda-market/telegram-bot
+    role: channel_adapter
     runtime:
       language: ruby
+  documentation:
+    slug: 0xda-market/docs
+    role: canonical_cross_repository_documentation
+
+architecture:
+  core_boundary:
+    principle: provider_agnostic
+    allowed:
+      - provider_neutral_domain_contracts
+      - opaque_provider_keys
+      - opaque_provider_user_ids
+      - opaque_provider_data
+      - generic_settlement_primitives
+      - service_specific_provider_neutral_architecture_docs
+    forbidden:
+      - provider_specific_research
+      - cross_repository_research
+      - provider_sdk_or_protocol_clients
+      - provider_session_or_credential_tooling
+      - provider_specific_documentation
+      - channel_webhooks
+      - channel_credentials
+      - provider_specific_economic_defaults
+    forbidden_path_components:
+      - research
+      - researches
+    canonical_research_repository: 0xda-market/docs
+    enforcement:
+      test: test/architecture_boundaries_test.rb
+      required_ci_job: test
+    historical_data_exception:
+      scope:
+        - applied_database_migrations
+        - opaque_catalog_or_identity_values
+      rule: historical_or_domain_data_may_name_a_provider_but_must_not_introduce_provider_behavior
 
 execution:
   connectors:
@@ -35,6 +70,7 @@ execution:
     - act_directly_through_available_connectors
     - do_not_request_manual_steps_when_a_connector_can_complete_them
     - keep_core_provider_agnostic
+    - put_cross_repository_and_provider_specific_research_in_0xda_market_docs
     - do_not_merge_deploy_or_run_irreversible_production_actions_without_owner_review
 
 workflow:
