@@ -22,13 +22,17 @@ module ZeroXDA
         CAPABILITY = "manual.fulfillment"
         CLIENT_PRICE_SCALE = 6
 
-        def initialize(kernel:, catalog:, pricing:, listings:, settlement_provider: nil, recipient_resolver: nil)
+        def initialize(
+          kernel:, catalog:, pricing:, listings:, settlement_provider: nil,
+          recipient_resolver: nil, payment_terms_provider: nil
+        )
           @kernel = kernel
           @catalog = catalog
           @pricing = pricing
           @listings = listings
           @settlement_provider = settlement_provider
           @recipient_resolver = recipient_resolver
+          @payment_terms_provider = payment_terms_provider
         end
 
         def quote(customer_user_id:, sku:, quantity: 1, recipient: nil, context: {})
@@ -127,6 +131,16 @@ module ZeroXDA
             "expires_at" => reservation.expires_at.iso8601(6),
             "idempotency_key" => "quotes/#{quote_id}/payment"
           }
+          provider_terms = @payment_terms_provider&.quote(
+            amount_usdt: product.fetch("total_price_usdt"),
+            sku: product.fetch("sku")
+          )
+          if provider_terms && !@settlement_provider
+            raise Core::ProviderContractError.new(
+              "provider payment terms require a settlement provider"
+            )
+          end
+          payment["provider"] = provider_terms if provider_terms
           payment["settlement_required"] = true if @settlement_provider
           order = @kernel.accept_quote(
             quote_id,
@@ -152,15 +166,68 @@ module ZeroXDA
           raise
         end
 
-        def confirm_payment(order_id:, reference:, data: {}, settlement: nil)
+        # Trusted provider confirmation scoped to the owning customer. Provider
+        # evidence must match immutable terms and a durable settlement record.
+        # Client-side payment UI callbacks are never accepted as payment proof.
+        def confirm_customer_payment(
+          customer_user_id:, order_id:, reference:, provider:, amount:, currency:, data: {}
+        )
+          customer_id = normalized_customer_id(customer_user_id)
+          reservation = @listings.reservation_for_order(order_id) ||
+                        raise(Core::NotFound.new("marketplace_order", order_id))
+          ensure_owner!(reservation, customer_id)
           before = @kernel.find_order(order_id)
-          unless before.payment
-            raise Core::Conflict.new(
-              "order does not require marketplace payment confirmation",
-              code: "payment_not_required",
-              details: { order_id: order_id.to_s }
+          ensure_payment_required!(before)
+          provider_amount = positive_integer(amount, field: "payment amount")
+          validate_provider_payment!(
+            before,
+            provider: provider,
+            amount: provider_amount,
+            currency: currency
+          )
+
+          if before.payment["status"] == "confirmed"
+            unless before.payment["reference"].to_s == reference.to_s
+              raise Core::Conflict.new(
+                "order payment is already confirmed with a different reference",
+                code: "payment_reference_mismatch",
+                details: { order_id: before.id }
+              )
+            end
+            return OrderResult.new(order: before, reservation: reservation)
+          end
+
+          unless @settlement_provider&.respond_to?(:confirm)
+            raise Core::ProviderContractError.new(
+              "provider payment confirmation requires a confirming settlement provider"
             )
           end
+          settlement = @settlement_provider.confirm(
+            order_id: before.id,
+            reference: reference,
+            provider: provider,
+            amount: provider_amount,
+            currency: currency,
+            data: data
+          )
+          @kernel.verify_settlement(settlement)
+
+          evidence = Core::RecordSupport.document(data, field: "payment data").merge(
+            "provider" => provider.to_s,
+            "amount" => provider_amount.to_s,
+            "currency" => currency.to_s.upcase
+          )
+          confirm_payment_record(
+            before,
+            reference: reference,
+            data: evidence,
+            reservation: reservation
+          )
+        end
+
+        def confirm_payment(order_id:, reference:, data: {}, settlement: nil)
+          before = @kernel.find_order(order_id)
+          ensure_payment_required!(before)
 
           if settlement
             @kernel.verify_settlement(settlement)
@@ -168,21 +235,12 @@ module ZeroXDA
             @kernel.verify_settlement(@settlement_provider.find_by_order(order_id))
           end
 
-          confirmed = @kernel.confirm_order_payment(
-            order_id,
+          reservation = @listings.reservation_for_order(order_id) ||
+                        raise(Core::NotFound.new("marketplace_order", order_id))
+          confirm_payment_record(
+            before,
             reference: reference,
-            data: data
-          )
-          begin
-            reservation = @listings.commit_payment(order_id: order_id)
-          rescue StandardError => error
-            rollback_confirmed_payment(before, confirmed)
-            expire_failed_payment(order_id, error)
-            raise
-          end
-
-          OrderResult.new(
-            order: @kernel.execute_order(order_id),
+            data: data,
             reservation: reservation
           )
         end
@@ -227,6 +285,75 @@ module ZeroXDA
         end
 
         private
+
+        def confirm_payment_record(before, reference:, data:, reservation:)
+          confirmed = @kernel.confirm_order_payment(
+            before.id,
+            reference: reference,
+            data: data
+          )
+          begin
+            committed = @listings.commit_payment(order_id: before.id)
+          rescue StandardError => error
+            rollback_confirmed_payment(before, confirmed)
+            expire_failed_payment(before.id, error)
+            raise
+          end
+
+          OrderResult.new(
+            order: @kernel.execute_order(before.id),
+            reservation: committed
+          )
+        end
+
+        def ensure_payment_required!(order)
+          return if order.payment
+
+          raise Core::Conflict.new(
+            "order does not require marketplace payment confirmation",
+            code: "payment_not_required",
+            details: { order_id: order.id }
+          )
+        end
+
+        def validate_provider_payment!(order, provider:, amount:, currency:)
+          expected = order.payment["provider"]
+          unless expected.is_a?(Hash)
+            raise Core::Conflict.new(
+              "order is not configured for provider payment",
+              code: "payment_provider_not_configured",
+              details: { order_id: order.id }
+            )
+          end
+
+          expected_amount = positive_integer(expected.fetch("amount"), field: "expected payment amount")
+          received_provider = provider.to_s
+          received_currency = currency.to_s.upcase
+
+          return if received_provider == expected.fetch("provider") &&
+                    received_currency == expected.fetch("currency") &&
+                    amount == expected_amount
+
+          raise Core::Conflict.new(
+            "provider payment does not match the order",
+            code: "payment_provider_mismatch",
+            details: {
+              order_id: order.id,
+              expected_provider: expected.fetch("provider"),
+              expected_currency: expected.fetch("currency"),
+              expected_amount: expected_amount.to_s
+            }
+          )
+        end
+
+        def positive_integer(value, field:)
+          number = Integer(value)
+          raise ArgumentError, "#{field} must be a positive integer" unless number.positive?
+
+          number
+        rescue ArgumentError, TypeError
+          raise ArgumentError, "#{field} must be a positive integer"
+        end
 
         def enforce_purchase_quantity!(product, quantity)
           return unless product.metadata.dig("purchase", "quantity_mode") == "single"

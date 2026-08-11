@@ -58,6 +58,15 @@ module ZeroXDA
           result
         end
 
+        # Providers with delayed reward availability can expose a durable
+        # maturity time. Broker earnings use this boundary before becoming
+        # payout-eligible. Providers without such a contract remain immediate.
+        def settlement_funds_available_at(order_id)
+          return nil unless @settlement_provider&.respond_to?(:funds_available_at)
+
+          @settlement_provider.funds_available_at(order_id: order_id)
+        end
+
         private
 
         def start_execution(id)

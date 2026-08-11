@@ -44,23 +44,51 @@ module ZeroXDA
           @store.transaction { |store| store.insert(earning) }
         end
 
-        def make_available(order_id:)
+        # Fulfillment makes an earning economically earned, but a payment rail
+        # may expose funds to the market only after a provider maturity window.
+        # Once a maturity boundary is recorded it is monotonic: a later call may
+        # extend it, but can never make the earning payout-eligible earlier.
+        def make_available(order_id:, not_before: nil)
           @store.transaction do |store|
             current = store.find_by_order(order_id) || raise(Core::NotFound.new("broker_earning", order_id))
             next current if %w[available payout_queued paid].include?(current.state)
             raise Core::Conflict.new("broker earning is not pending", code: "earning_not_pending") unless current.state == "pending"
+
             now = current_time
-            store.replace(Earning.new(**current.to_h.merge(state: "available", available_at: now,
-                                                            updated_at: now, version: current.version + 1)),
-                          expected_version: current.version)
+            requested = not_before && normalized_time(not_before, field: "not_before")
+            threshold = [current.available_at, requested].compact.max
+            if threshold && threshold > now
+              next current if current.available_at == threshold
+
+              next store.replace(
+                Earning.new(**current.to_h.merge(
+                  available_at: threshold,
+                  updated_at: now,
+                  version: current.version + 1
+                )),
+                expected_version: current.version
+              )
+            end
+
+            store.replace(
+              Earning.new(**current.to_h.merge(
+                state: "available",
+                available_at: threshold || now,
+                updated_at: now,
+                version: current.version + 1
+              )),
+              expected_version: current.version
+            )
           end
         end
 
         def list(actor_user_id:)
+          release_matured(actor_user_id)
           @store.list_by_seller(actor_user_id)
         end
 
         def balance(actor_user_id:)
+          release_matured(actor_user_id)
           groups = @store.list_by_seller(actor_user_id).group_by(&:state)
           sum = ->(state) { (groups[state] || []).sum(BigDecimal("0"), &:payable_amount) }
           Balance.new(pending: sum.call("pending"), available: sum.call("available"),
@@ -106,6 +134,7 @@ module ZeroXDA
         # while a payout is queued/processing returns the same payout and never
         # reassigns newly available earnings into an older amount snapshot.
         def queue_payout(actor_user_id:)
+          release_matured(actor_user_id)
           @store.transaction do |store|
             profile = store.payout_profile(actor_user_id, for_update: true)
             unless profile&.enabled
@@ -214,6 +243,24 @@ module ZeroXDA
 
         private
 
+        def release_matured(actor_user_id)
+          now = current_time
+          @store.transaction do |store|
+            store.list_by_seller(actor_user_id).each do |earning|
+              next unless earning.state == "pending" && earning.available_at && earning.available_at <= now
+
+              store.replace(
+                Earning.new(**earning.to_h.merge(
+                  state: "available",
+                  updated_at: now,
+                  version: earning.version + 1
+                )),
+                expected_version: earning.version
+              )
+            end
+          end
+        end
+
         def payout_identity(actor_user_id, earnings)
           earning_ids = earnings.map(&:id).sort
           fingerprint = Digest::SHA256.hexdigest(earning_ids.join("\0"))
@@ -241,6 +288,14 @@ module ZeroXDA
         def amount_usdt(amount, currency)
           return BigDecimal(amount.to_s) if currency == "USDT"
           @localization.amount_usdt(amount: amount, currency: currency)
+        end
+
+        def normalized_time(value, field:)
+          return value.utc if value.is_a?(Time)
+
+          Time.iso8601(value.to_s).utc
+        rescue ArgumentError
+          raise ArgumentError, "#{field} must be an ISO 8601 time"
         end
 
         def current_time

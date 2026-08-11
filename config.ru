@@ -41,8 +41,8 @@ require_relative "lib/zero_x_da/market/marketplace/service"
 require_relative "lib/zero_x_da/market/marketplace/broker_order_decisions"
 require_relative "lib/zero_x_da/market/settlement/memory_store"
 require_relative "lib/zero_x_da/market/settlement/postgres_store"
-require_relative "lib/zero_x_da/market/settlement/manual_provider"
 require_relative "lib/zero_x_da/market/settlement/integration"
+require_relative "lib/zero_x_da/market/composition/settlement_provider_factory"
 
 clock = -> { Time.now.utc }
 environment = ENV.fetch("DEPLOY_ENV", "development")
@@ -51,8 +51,12 @@ operator_token = ENV["MANUAL_PROVIDER_TOKEN"]
 database_url = ENV["DATABASE_URL"]
 mock_payment_enabled = ENV.fetch("ENABLE_MOCK_PAYMENT_PROVIDER", "0") == "1"
 mock_payment_token = ENV["MOCK_PAYMENT_PROVIDER_TOKEN"]
+market_payment_provider = ENV["MARKET_PAYMENT_PROVIDER"].to_s.strip
 manual_quote_ttl = Integer(ENV.fetch("MANUAL_QUOTE_TTL_SECONDS", "900"))
 raise "MANUAL_QUOTE_TTL_SECONDS must be positive" unless manual_quote_ttl.positive?
+if mock_payment_enabled && !market_payment_provider.empty?
+  raise "mock and real market payment providers cannot be enabled together"
+end
 
 if environment == "production"
   raise "mock payment provider cannot be enabled in production" if mock_payment_enabled
@@ -89,13 +93,14 @@ manual_provider = if operator_token && !operator_token.empty?
                   end
 providers = manual_provider ? { "manual.fulfillment" => manual_provider } : {}
 settlement_store = database ? ZeroXDA::Market::Settlement::PostgresStore.new(database: database) : ZeroXDA::Market::Settlement::MemoryStore.new
-settlement_provider = if operator_token && !operator_token.empty?
-                        ZeroXDA::Market::Settlement::ManualProvider.new(
-                          clock: clock, store: settlement_store,
-                          variable_fee_bps: Integer(ENV.fetch("MARKETPLACE_VARIABLE_FEE_BPS", ZeroXDA::Market::Pricing::ProfitabilityPolicy::DEFAULT_VARIABLE_FEE_BPS.to_s)),
-                          fixed_cost_usdt: ENV.fetch("MARKETPLACE_FIXED_COST_USDT", ZeroXDA::Market::Pricing::ProfitabilityPolicy::DEFAULT_FIXED_COST_USDT.to_s("F")),
-                          tolerance_bps: Integer(ENV.fetch("MANUAL_SETTLEMENT_TOLERANCE_BPS", "0")))
-                      end
+settlements = ZeroXDA::Market::Composition::SettlementProviderFactory.build(
+  key: market_payment_provider,
+  env: ENV,
+  clock: clock,
+  store: settlement_store,
+  operator_token: operator_token
+)
+settlement_provider = settlements.primary
 settlement_cost = settlement_provider&.default_cost || ZeroXDA::Market::Core::Contracts::CostResult.new(variable_fee_bps: 0, fixed_cost_usdt: 0)
 profitability = ZeroXDA::Market::Pricing::ProfitabilityPolicy.new(
   minimum_margin_bps: Integer(ENV.fetch("MARKETPLACE_MIN_MARGIN_BPS", ZeroXDA::Market::Pricing::ProfitabilityPolicy::DEFAULT_MINIMUM_MARGIN_BPS.to_s)),
@@ -117,7 +122,8 @@ broker_orders = manual_provider && ZeroXDA::Market::BrokerOrders::Service.new(st
 recipient_resolver = ZeroXDA::Market::Marketplace::RecipientResolver.new(identities: identity_store)
 marketplace = ZeroXDA::Market::Marketplace::Service.new(kernel: kernel, catalog: catalog, pricing: pricing, listings: listings,
                                                         broker_orders: broker_orders, settlement_provider: settlement_provider,
-                                                        recipient_resolver: recipient_resolver)
+                                                        recipient_resolver: recipient_resolver,
+                                                        payment_terms_provider: settlements.payment_terms)
 public_api = ZeroXDA::Market::Transport::JSONAPI.new(kernel: kernel, token: public_token, readiness: -> { store.healthy? },
                                                      identity_service: identity_service, admin_service: admin_service,
                                                      catalog: catalog, pricing: pricing, localization: localization,
@@ -128,7 +134,8 @@ operator_api = nil
 if manual_provider
   operator_api = ZeroXDA::Market::Transport::ManualAPI.new(provider: manual_provider, token: operator_token,
                                                             identity_service: identity_service, catalog: catalog,
-                                                            marketplace: marketplace, settlement_provider: settlement_provider,
+                                                            marketplace: marketplace,
+                                                            settlement_provider: settlements.manual,
                                                             broker_earnings: broker_earnings)
   applications["/operator"] = operator_api
 end
