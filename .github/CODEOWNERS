@@ -1,0 +1,6 @@
+# Core architecture boundary: changes here require explicit owner review when
+# CODEOWNERS review enforcement is enabled in repository rules.
+/PROJECT_INSTRUCTIONS.yaml @0x0sky
+/test/architecture_boundaries_test.rb @0x0sky
+/.github/workflows/ci.yml @0x0sky
+/docs/** @0x0sky

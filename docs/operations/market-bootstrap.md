@@ -1,13 +1,13 @@
 # Market bootstrap reconciliation
 
-`bin/market-bootstrap` reconciles the six buyer-facing Telegram products to a declarative desired state. It is intended for development/test resets and repeatable environment setup, not as a second pricing system.
+`bin/market-bootstrap` reconciles the configured buyer-facing market product set to a declarative desired state. It is intended for development/test resets and repeatable environment setup, not as a second pricing system.
 
 The command owns two pieces of mutable market state:
 
 - administrator sale prices in USDT;
 - one active broker listing per SKU for the selected broker, including quantity, ask price and quote currency.
 
-The required SKU set is fixed to `premium_3m`, `premium_6m`, `premium_9m`, `stars_500`, `stars_1000`, and `stars_3000`. Missing, duplicate, or additional SKU rows are rejected before any write.
+The required SKU set is defined by the bootstrap reconciler's current product contract. Missing, duplicate, or additional SKU rows are rejected before any write. Provider- or channel-specific interpretation of those SKUs belongs outside this operational contract.
 
 ## Contract
 

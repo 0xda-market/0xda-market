@@ -24,15 +24,15 @@ class MarketplaceProviderPaymentCycleTest < Minitest::Test
       clock: @clock,
       id_generator: SequenceIDs.new
     )
-    @broker = identity.authenticate(provider: "telegram", provider_user_id: "77", role: "broker").user
-    @client = identity.authenticate(provider: "telegram", provider_user_id: "78").user
-    @other_client = identity.authenticate(provider: "telegram", provider_user_id: "79").user
+    @broker = identity.authenticate(provider: "channel.example", provider_user_id: "77", role: "broker").user
+    @client = identity.authenticate(provider: "channel.example", provider_user_id: "78").user
+    @other_client = identity.authenticate(provider: "channel.example", provider_user_id: "79").user
 
     product = ZeroXDA::Market::Catalog::Product.new(
-      sku: "premium_3m",
-      short_name: "Premium 3m",
-      name: "Telegram Premium 3 months",
-      button_label: "Premium 3m",
+      sku: "sku_a",
+      short_name: "Subscription",
+      name: "Subscription product",
+      button_label: "Subscription",
       marketable: true,
       position: 1,
       created_at: @clock.call
@@ -56,7 +56,7 @@ class MarketplaceProviderPaymentCycleTest < Minitest::Test
       catalog: catalog,
       clock: @clock
     )
-    pricing.apply_price(sku: "premium_3m", amount_usdt: "12.50")
+    pricing.apply_price(sku: "sku_a", amount_usdt: "12.50")
     profitability = ZeroXDA::Market::Pricing::ProfitabilityPolicy.new(
       minimum_margin_bps: 1_000,
       supply_buffer_bps: 0,
@@ -73,17 +73,17 @@ class MarketplaceProviderPaymentCycleTest < Minitest::Test
     )
     listings.create(
       actor_user_id: @broker.id,
-      sku: "premium_3m",
+      sku: "sku_a",
       quantity: "2",
       price_amount: "9.25",
       currency: "USDT"
     )
 
     @settlement = ZeroXDA::Market::Settlement::IntegerUnitProvider.new(
-      key: "telegram_stars",
-      currency: "XTR",
+      key: "provider.integer",
+      currency: "TOK",
       usdt_per_unit: "0.013",
-      allowed_skus: ["premium_3m"],
+      allowed_skus: ["sku_a"],
       clock: @clock
     )
     provider = TestProvider.new(clock: @clock, quote_ttl: 60)
@@ -107,7 +107,7 @@ class MarketplaceProviderPaymentCycleTest < Minitest::Test
   def test_provider_payment_is_durable_customer_scoped_and_required_before_fulfillment
     quote = @marketplace.quote(
       customer_user_id: @client.id,
-      sku: "premium_3m",
+      sku: "sku_a",
       quantity: 1
     )
     accepted = @marketplace.accept(
@@ -117,8 +117,8 @@ class MarketplaceProviderPaymentCycleTest < Minitest::Test
 
     assert_equal "payment_pending", accepted.order.status
     assert_equal "pending", accepted.order.payment.fetch("status")
-    assert_equal "telegram_stars", accepted.order.payment.dig("provider", "provider")
-    assert_equal "XTR", accepted.order.payment.dig("provider", "currency")
+    assert_equal "provider.integer", accepted.order.payment.dig("provider", "provider")
+    assert_equal "TOK", accepted.order.payment.dig("provider", "currency")
     assert_equal "962", accepted.order.payment.dig("provider", "amount")
     assert_equal "pending", @settlement.find_by_order(accepted.order.id).state
 
@@ -135,9 +135,9 @@ class MarketplaceProviderPaymentCycleTest < Minitest::Test
         customer_user_id: @other_client.id,
         order_id: accepted.order.id,
         reference: "charge-other",
-        provider: "telegram_stars",
+        provider: "provider.integer",
         amount: 962,
-        currency: "XTR"
+        currency: "TOK"
       )
     end
 
@@ -146,9 +146,9 @@ class MarketplaceProviderPaymentCycleTest < Minitest::Test
         customer_user_id: @client.id,
         order_id: accepted.order.id,
         reference: "charge-short",
-        provider: "telegram_stars",
+        provider: "provider.integer",
         amount: 961,
-        currency: "XTR"
+        currency: "TOK"
       )
     end
     assert_equal "payment_provider_mismatch", mismatch.code
@@ -158,9 +158,9 @@ class MarketplaceProviderPaymentCycleTest < Minitest::Test
       customer_user_id: @client.id,
       order_id: accepted.order.id,
       reference: "charge-1",
-      provider: "telegram_stars",
+      provider: "provider.integer",
       amount: 962,
-      currency: "XTR",
+      currency: "TOK",
       data: { "source" => "authoritative-provider-event" }
     )
 
@@ -176,9 +176,9 @@ class MarketplaceProviderPaymentCycleTest < Minitest::Test
       customer_user_id: @client.id,
       order_id: accepted.order.id,
       reference: "charge-1",
-      provider: "telegram_stars",
+      provider: "provider.integer",
       amount: 962,
-      currency: "XTR"
+      currency: "TOK"
     )
     assert_equal paid.order.id, repeated.order.id
 
@@ -187,9 +187,9 @@ class MarketplaceProviderPaymentCycleTest < Minitest::Test
         customer_user_id: @client.id,
         order_id: accepted.order.id,
         reference: "charge-2",
-        provider: "telegram_stars",
+        provider: "provider.integer",
         amount: 962,
-        currency: "XTR"
+        currency: "TOK"
       )
     end
     assert_equal "payment_reference_mismatch", duplicate.code

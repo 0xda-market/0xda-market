@@ -2,9 +2,9 @@
 
 ## Purpose
 
-0xda-market keeps marketplace economics canonical in USDT while allowing a channel adapter to collect payment through a provider whose customer-facing unit is different from USDT.
+0xda-market keeps marketplace economics canonical in USDT while allowing a channel adapter to collect payment through a provider whose client-facing unit differs from USDT.
 
-The core does not trust browser payment state and does not call channel APIs. The durable source of truth for money movement remains `market.settlements`.
+Core does not trust browser payment state and does not call channel APIs. The durable source of truth for money movement remains `market.settlements`.
 
 ## Boundary
 
@@ -12,7 +12,7 @@ The core does not trust browser payment state and does not call channel APIs. Th
 channel UI
   -> quote / accept
   -> core snapshots provider payment terms
-  -> channel provider UI
+  -> provider UI
   -> authoritative provider event
   -> trusted channel adapter
   -> core settlement confirmation
@@ -35,65 +35,61 @@ The market owns an explicit `usdt_per_unit` valuation. The required provider amo
 provider_units = ceil(client_total_usdt / usdt_per_unit)
 ```
 
-The valuation is snapshotted into the order payment terms and the settlement record. A provider confirmation must match all of the following exactly:
+The valuation is snapshotted into the order payment terms and settlement record. A provider confirmation must match all of the following exactly:
 
 - provider key;
 - provider currency;
 - integer provider amount;
-- owning market customer;
+- owning market client;
 - external payment reference.
 
 The settled USDT-equivalent value must not be below the original canonical market amount.
 
-An integer-unit provider may also define `funds_hold_seconds`. When payment is confirmed, the settlement snapshots `funds_available_at = confirmed_at + funds_hold_seconds`. Fulfillment may still proceed after the payment is verified, but the associated broker earning remains `pending` until that provider-funds maturity boundary is reached. Matured earnings are promoted lazily when broker balances/listings/payouts are read, so no separate timer worker is required.
+An integer-unit provider may define `funds_hold_seconds`. When payment is confirmed, the settlement snapshots `funds_available_at = confirmed_at + funds_hold_seconds`. Fulfillment may proceed after payment verification, while the associated broker earning remains `pending` until the provider-funds maturity boundary is reached. Matured earnings are promoted lazily when broker balances, earnings, or payouts are read.
 
-This separates two different truths:
+This separates three independent truths:
 
 ```text
-payment confirmed     = buyer paid and fulfillment may proceed
-funds available       = market may safely treat provider proceeds as payout-backed
+payment confirmed     = client paid and fulfillment may proceed
+funds available       = market may treat provider proceeds as payout-backed
 broker earning paid   = market transferred the matured earning to the broker
 ```
+
+## Generic runtime composition
+
+Core accepts only provider-neutral payment configuration. A concrete channel or payment adapter supplies the opaque provider key and provider economics at deployment time.
+
+```text
+MARKET_PAYMENT_PROVIDER=<opaque provider key>
+MARKET_PAYMENT_KIND=integer_unit
+MARKET_PAYMENT_CURRENCY=<provider unit code>
+MARKET_PAYMENT_USDT_PER_UNIT=<reviewed valuation>
+MARKET_PAYMENT_SKUS=<comma-separated eligible SKUs>
+MARKET_PAYMENT_FUNDS_HOLD_SECONDS=<non-negative maturity delay>
+```
+
+No concrete provider key, SDK, protocol method, provider-specific rate, product allow-list, or provider-specific maturity policy belongs in core composition defaults.
+
+Provider-specific activation guidance, economic assumptions, operational research, and external API contracts belong in the owning adapter repository or the canonical `0xda-market/docs` repository.
 
 ## Safety invariants
 
 - A provider payment configuration without a settlement provider fails closed.
-- A provider payment cannot be confirmed from a browser or Mini App callback alone.
+- A provider payment cannot be confirmed from a browser callback alone.
 - A settlement is created when the accepted order enters `payment_pending`.
-- Fulfillment remains impossible until the settlement is verified and the order payment is confirmed.
+- Fulfillment remains impossible until settlement verification and payment confirmation succeed.
 - Repeating the same external payment reference is idempotent.
 - A different external reference for an already-settled order is rejected.
 - Expired settlements cannot be confirmed.
-- Provider/currency/amount mismatches cannot route fulfillment.
+- Provider, currency, and amount mismatches cannot route fulfillment.
 - Real and mock market payment providers cannot be enabled simultaneously.
-- Provider-specific configuration is isolated outside the runtime boundary in the composition layer.
+- Provider-specific transport, credentials, SDKs, and protocol behavior remain outside core.
 - A broker earning cannot enter an available payout batch before the provider's durable `funds_available_at` boundary.
-- Existing immediate-settlement providers retain their existing immediate broker-earning behavior because they expose no future maturity boundary.
-
-## Telegram Stars composition
-
-The first concrete composition uses Telegram Stars (`XTR`) for Telegram digital-goods checkout. The concrete provider name remains outside `config.ru`; `Composition::SettlementProviderFactory` owns the mapping.
-
-Runtime selection:
-
-```text
-MARKET_PAYMENT_PROVIDER=telegram_stars
-TELEGRAM_STARS_USDT_PER_STAR=<explicit current market valuation>
-TELEGRAM_STARS_PAYMENT_SKUS=premium_3m,premium_6m,premium_9m
-TELEGRAM_STARS_REWARD_HOLD_SECONDS=<at least 1814400>
-```
-
-`TELEGRAM_STARS_USDT_PER_STAR` is intentionally not hard-coded. Provider economics can change and must be reviewed against Telegram's current official terms before activation.
-
-Telegram currently documents a USD-equivalent developer reward per Star and states that received Stars may remain unavailable for rewards for up to 21 days. It also reserves the ability to debit Stars in refund/abuse cases. Core therefore defaults the Stars composition to a conservative 21-day (`1,814,400` second) reward hold and refuses a lower configured value. The hold may be raised operationally if the provider contract or market risk policy requires it.
-
-The default eligible SKU set contains only Telegram Premium products. `stars_*` products are deliberately excluded from the initial Stars checkout to avoid creating a Stars-for-Stars sale path without a separate policy and compliance review.
+- Providers without a future maturity boundary retain immediate broker-earning availability.
 
 ## Broker payout relationship
 
-`broker ask = broker earning` remains unchanged. The provider hold changes only **when** that earning becomes payout-eligible, not its amount.
-
-For a delayed provider settlement:
+`broker ask = broker earning` remains unchanged. A provider hold changes only **when** an earning becomes payout-eligible, not its amount.
 
 ```text
 fulfilled order
@@ -108,10 +104,6 @@ This prevents 0xda-market from paying a broker out of an unsettled provider rece
 
 ## Activation contract
 
-The real provider is opt-in. Merging this code does not activate payments.
+A real provider is opt-in. Merging provider-neutral settlement support does not activate any payment rail.
 
-The Telegram adapter must be enabled and able to create/verify invoices before the core is switched from its existing settlement mode to the real provider. If either side is not ready, keep `MARKET_PAYMENT_PROVIDER` unset.
-
-Before production activation, re-check Telegram's current reward valuation, reward-availability delay, refund/debit rules and any applicable fees. Set the Stars valuation deliberately; never infer it from what a user pays to acquire Stars, because Telegram's own terms distinguish user acquisition cost from developer reward value.
-
-No production deployment or environment mutation is part of this change.
+Before activation, the owning adapter must validate the provider-side payment event, supply reviewed configuration, and preserve the provider key, currency, amount, external reference, and maturity semantics expected by core. Any provider-specific policy belongs outside this repository.

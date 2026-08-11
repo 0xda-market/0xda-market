@@ -45,4 +45,4 @@ Currency metadata is regional rather than language-wide:
 
 Regional Russian and Spanish locales outside those rows remain currency-neutral and fall back to USDT unless a channel supplies an explicit supported currency. Language-only `ru`, `es`, and `pt` are also currency-neutral because they span multiple countries.
 
-This contract keeps the provider-agnostic core deterministic and lets Telegram, WebApp, and future channels add better country/currency signals later without changing translation semantics.
+This contract keeps the provider-agnostic core deterministic and lets channel adapters add better country/currency signals later without changing translation semantics.

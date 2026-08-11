@@ -1,6 +1,6 @@
 # Administrator pricing
 
-Pricing remains a provider- and channel-neutral core capability. Telegram commands, Telegram Mini App, a website and future clients must all use the same append-only price ledger and administrator authorization.
+Pricing remains a provider- and channel-neutral core capability. Command adapters, browser applications, websites and future clients must all use the same append-only price ledger and administrator authorization.
 
 ## Data model
 
@@ -73,6 +73,6 @@ Automatic `core` rows have no administrator editor UUID; provenance is carried b
 
 ## Boundaries
 
-Pricing does not own Telegram copy, browser state, wallets or settlement. Currency exchange values use the same append-only price model because currencies are non-marketable catalog products whose amount means USDT paid per unit.
+Pricing does not own channel copy, browser state, wallets or settlement. Currency exchange values use the same append-only price model because currencies are non-marketable catalog products whose amount means USDT paid per unit.
 
 Automatic pricing never uses buyer-facing localized rounding as an economic input. Broker supply normalization, reference pricing and profitability remain in canonical USDT; localized smart rounding is presentation-only and upward-only.

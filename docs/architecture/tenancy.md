@@ -1,14 +1,14 @@
 # Tenancy
 
 Status: draft
-Scope: `0xda-market/core`, `0xda-market/telegram-bot`
+Scope: `0xda-market/core` plus external channel adapters
 Change type: architecture proposal, no implementation
 
 ## Problem
 
 The core is a single-operator marketplace. Every product, price, order and role
 belongs to one implicit owner. Serving a second shop today requires a second
-deployment, a second database and a second bot process.
+deployment, a second database and separate adapter runtime configuration.
 
 Tenancy is the change that turns the engine into something that can be sold to the
 operators who already have supply and demand.
@@ -37,10 +37,10 @@ market.tenants              id, slug, status, created_at
 market.tenant_memberships   tenant_id, user_id, role, status
 ```
 
-Rationale: a Telegram ID is globally unique. Duplicating a user per tenant would
-break the single-internal-UUID invariant that authentication, authorization,
-pricing provenance and broker ownership all rest on. Membership is the correct
-place for multiplicity.
+Rationale: an external provider user ID may be globally unique within its provider.
+Duplicating a user per tenant would break the single-internal-UUID invariant that
+authentication, authorization, pricing provenance and broker ownership all rest on.
+Membership is the correct place for multiplicity.
 
 `client`, `broker` and `admin` become tenant-scoped roles. A new platform-level
 role sits above them and is held only by the platform operator. Tenant admins must
@@ -63,7 +63,7 @@ Platform-scoped, deliberately shared:
 - FX snapshots. An exchange rate is a fact about the world, not about a shop.
   Duplicating the refresh process per tenant multiplies cost and creates
   inconsistent pricing for no benefit.
-- The canonical SKU registry. "Telegram Premium, 3 months" is the same object
+- The canonical SKU registry. A canonical product SKU is the same object
   everywhere. Tenants activate, localize, position and price it; they do not
   re-enter it.
 
@@ -90,19 +90,18 @@ credentials only.
 Architecture tests extend to assert that no persistence adapter issues a query
 against a scoped table without a tenant predicate.
 
-## Channel adapter
+## Channel adapter contract
 
-One bot process, many bots. Per-tenant deployment on a single VPS does not scale
-past a handful of customers.
+A shared adapter process may serve many tenant-specific channel identities. The
+core contract does not prescribe one concrete channel protocol.
 
-- webhook route carries the tenant: `POST /telegram/webhook/:tenant_slug`
-- `X-Telegram-Bot-Api-Secret-Token` is resolved per tenant
-- Mini App `initData` validation is per bot token, so token lookup must be
-  tenant-resolved before signature verification, not after
-- the anti-corruption layer is unchanged; it gains a tenant argument on the way in
+- an adapter route carries or resolves the tenant before core authentication;
+- channel credentials are resolved per tenant outside core;
+- host-specific signature validation happens before the request reaches core;
+- the anti-corruption layer is unchanged; it gains an explicit tenant argument on the way in.
 
-Bot tokens are tenant secrets. They live in the runtime `.env` today and must move
-to encrypted storage before a second tenant exists.
+Channel credentials are tenant secrets. They must live in the adapter's secure
+runtime configuration or encrypted credential store, never in core domain state.
 
 ## Migration
 

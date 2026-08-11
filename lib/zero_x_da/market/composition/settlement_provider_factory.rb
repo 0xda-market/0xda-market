@@ -10,8 +10,6 @@ module ZeroXDA
       SettlementProviders = Struct.new(:primary, :manual, :payment_terms, keyword_init: true)
 
       module SettlementProviderFactory
-        TELEGRAM_STARS_MINIMUM_REWARD_HOLD_SECONDS = 21 * 24 * 60 * 60
-
         module_function
 
         def build(key:, env:, clock:, store:, operator_token:)
@@ -21,44 +19,40 @@ module ZeroXDA
             fixed_cost_usdt: env.fetch("MARKETPLACE_FIXED_COST_USDT", Pricing::ProfitabilityPolicy::DEFAULT_FIXED_COST_USDT.to_s("F"))
           }
 
-          case provider_key
-          when ""
+          if provider_key.empty?
             manual = build_manual(env: env, clock: clock, store: store, operator_token: operator_token, common: common)
-            SettlementProviders.new(primary: manual, manual: manual, payment_terms: nil)
-          when "telegram_stars"
-            rate = env["TELEGRAM_STARS_USDT_PER_STAR"].to_s.strip
-            raise "TELEGRAM_STARS_USDT_PER_STAR is required for telegram_stars payments" if rate.empty?
-
-            skus = env.fetch(
-              "TELEGRAM_STARS_PAYMENT_SKUS",
-              "premium_3m,premium_6m,premium_9m"
-            ).split(",").map(&:strip).reject(&:empty?).uniq
-            raise "TELEGRAM_STARS_PAYMENT_SKUS must contain at least one SKU" if skus.empty?
-
-            reward_hold_seconds = Integer(
-              env.fetch(
-                "TELEGRAM_STARS_REWARD_HOLD_SECONDS",
-                TELEGRAM_STARS_MINIMUM_REWARD_HOLD_SECONDS.to_s
-              )
-            )
-            if reward_hold_seconds < TELEGRAM_STARS_MINIMUM_REWARD_HOLD_SECONDS
-              raise "TELEGRAM_STARS_REWARD_HOLD_SECONDS must be at least 21 days"
-            end
-
-            provider = Settlement::IntegerUnitProvider.new(
-              key: "telegram_stars",
-              currency: "XTR",
-              usdt_per_unit: rate,
-              allowed_skus: skus,
-              funds_hold_seconds: reward_hold_seconds,
-              clock: clock,
-              store: store,
-              **common
-            )
-            SettlementProviders.new(primary: provider, manual: nil, payment_terms: provider)
-          else
-            raise "MARKET_PAYMENT_PROVIDER is unsupported"
+            return SettlementProviders.new(primary: manual, manual: manual, payment_terms: nil)
           end
+
+          payment_kind = env.fetch("MARKET_PAYMENT_KIND", "integer_unit").to_s.strip
+          raise "MARKET_PAYMENT_KIND is unsupported" unless payment_kind == "integer_unit"
+
+          provider = build_integer_unit(
+            provider_key: provider_key,
+            env: env,
+            clock: clock,
+            store: store,
+            common: common
+          )
+          SettlementProviders.new(primary: provider, manual: nil, payment_terms: provider)
+        end
+
+        def build_integer_unit(provider_key:, env:, clock:, store:, common:)
+          currency = required_value(env, "MARKET_PAYMENT_CURRENCY")
+          rate = required_value(env, "MARKET_PAYMENT_USDT_PER_UNIT")
+          skus = required_value(env, "MARKET_PAYMENT_SKUS").split(",").map(&:strip).reject(&:empty?).uniq
+          raise "MARKET_PAYMENT_SKUS must contain at least one SKU" if skus.empty?
+
+          Settlement::IntegerUnitProvider.new(
+            key: provider_key,
+            currency: currency,
+            usdt_per_unit: rate,
+            allowed_skus: skus,
+            funds_hold_seconds: Integer(env.fetch("MARKET_PAYMENT_FUNDS_HOLD_SECONDS", "0")),
+            clock: clock,
+            store: store,
+            **common
+          )
         end
 
         def build_manual(env:, clock:, store:, operator_token:, common:)
@@ -70,6 +64,13 @@ module ZeroXDA
             **common,
             tolerance_bps: Integer(env.fetch("MANUAL_SETTLEMENT_TOLERANCE_BPS", "0"))
           )
+        end
+
+        def required_value(env, name)
+          value = env[name].to_s.strip
+          raise "#{name} is required when MARKET_PAYMENT_PROVIDER is configured" if value.empty?
+
+          value
         end
       end
     end

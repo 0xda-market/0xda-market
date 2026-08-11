@@ -10,27 +10,41 @@ class SettlementProviderFactoryTest < Minitest::Test
     @store = ZeroXDA::Market::Settlement::MemoryStore.new
   end
 
-  def test_telegram_stars_defaults_to_twenty_one_day_reward_hold
+  def test_builds_a_provider_neutral_integer_unit_payment_adapter
     providers = build(
-      "MARKET_PAYMENT_PROVIDER" => "telegram_stars",
-      "TELEGRAM_STARS_USDT_PER_STAR" => "0.013"
+      "MARKET_PAYMENT_PROVIDER" => "provider.example",
+      "MARKET_PAYMENT_KIND" => "integer_unit",
+      "MARKET_PAYMENT_CURRENCY" => "TOK",
+      "MARKET_PAYMENT_USDT_PER_UNIT" => "0.25",
+      "MARKET_PAYMENT_SKUS" => "sku_a,sku_b",
+      "MARKET_PAYMENT_FUNDS_HOLD_SECONDS" => "3600"
     )
 
-    assert_equal "telegram_stars", providers.primary.key
-    assert_equal 21 * 24 * 60 * 60, providers.primary.funds_hold_seconds
+    assert_equal "provider.example", providers.primary.key
+    assert_equal 3600, providers.primary.funds_hold_seconds
     assert_same providers.primary, providers.payment_terms
   end
 
-  def test_telegram_stars_reward_hold_cannot_be_configured_below_twenty_one_days
+  def test_requires_explicit_integer_unit_payment_configuration
     error = assert_raises(RuntimeError) do
       build(
-        "MARKET_PAYMENT_PROVIDER" => "telegram_stars",
-        "TELEGRAM_STARS_USDT_PER_STAR" => "0.013",
-        "TELEGRAM_STARS_REWARD_HOLD_SECONDS" => "86400"
+        "MARKET_PAYMENT_PROVIDER" => "provider.example",
+        "MARKET_PAYMENT_CURRENCY" => "TOK"
       )
     end
 
-    assert_match(/at least 21 days/, error.message)
+    assert_match(/MARKET_PAYMENT_USDT_PER_UNIT is required/, error.message)
+  end
+
+  def test_rejects_unsupported_payment_kind
+    error = assert_raises(RuntimeError) do
+      build(
+        "MARKET_PAYMENT_PROVIDER" => "provider.example",
+        "MARKET_PAYMENT_KIND" => "provider_specific"
+      )
+    end
+
+    assert_equal "MARKET_PAYMENT_KIND is unsupported", error.message
   end
 
   private
