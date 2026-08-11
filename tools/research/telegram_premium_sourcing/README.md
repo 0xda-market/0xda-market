@@ -2,6 +2,8 @@
 
 This tool measures Telegram-owned Premium gift and Stars acquisition offers without making a purchase.
 
+Canonical cross-repository findings live in `0xda-market/docs` under `researches/telegram-premium-sourcing/`. This README documents only the executable probe and its safety/usage contract.
+
 ## Safety boundary
 
 Live mode is intentionally read-only. It invokes exactly:
