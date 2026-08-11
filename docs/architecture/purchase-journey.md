@@ -14,7 +14,7 @@ product selection
 
 ## Intent contract
 
-The adapter creates a `manual.fulfillment` intent. The payload is an immutable snapshot of the selected catalog item and quoted USDT amount. Channel and authenticated customer identifiers belong in `context`; the core does not interpret Telegram-specific fields.
+The adapter creates a `manual.fulfillment` intent. The payload is an immutable snapshot of the selected catalog item and quoted USDT amount. Channel and authenticated client identifiers belong in `context`; core does not interpret channel-specific fields.
 
 ## Quote contract
 
@@ -24,7 +24,7 @@ Core remains authoritative: accepting an expired quote returns `quote_expired`.
 
 ## Execution contract
 
-After explicit acceptance, the adapter accepts the quote and executes the order. Manual execution creates a durable operator task and normally returns an order in `pending` state. The client surface must state that fulfillment is in progress and retain a way to refresh the durable order after leaving the conversation.
+After explicit acceptance, the adapter accepts the quote and executes the order. Manual execution creates a durable operator task and normally returns an order in `pending` state. The client surface must state that fulfillment is in progress and retain a way to refresh the durable order after leaving the channel session.
 
 A completed operator task resolves the same order to `succeeded`; a rejected task resolves through the existing structured failure contract. Repeated execution is idempotent and does not create duplicate tasks.
 
@@ -33,4 +33,4 @@ A completed operator task resolves the same order to `succeeded`; a rejected tas
 - catalog grouping and presentation belong to channel adapters;
 - quote expiry, acceptance and order transitions belong to core;
 - operator matching and task persistence belong to the manual fulfillment adapter;
-- channel-local conversation state must not be required to recover an order.
+- channel-local state must not be required to recover an order.
