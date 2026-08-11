@@ -1,0 +1,4 @@
+.venv/
+*.session
+*.session-journal
+snapshots/private/
