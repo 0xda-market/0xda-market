@@ -23,6 +23,27 @@ Never commit `api_hash`, a session string, or a `.session` file. The local ignor
 
 The algorithm intentionally permits overbuying Stars because Telegram sells fixed top-up packages. The report records both the acquired amount and the overbuy.
 
+## Normalized sourcing quotes
+
+The report also emits native-currency Premium observations as `sourcing-quote.v1` records so quotes from different legitimate broker/account contexts can be compared without coupling the comparison layer to Telegram's raw MTProto shape.
+
+Each quote contains:
+
+- `provider`: currently `telegram_native`;
+- `region`: optional operator-supplied two-letter country context;
+- `currency`;
+- `sku`, such as `premium_3m`;
+- `quantity`;
+- `acquisition_price_minor` and exact `unit_acquisition_price_minor`;
+- `offer_kind`;
+- `observed_at`.
+
+Telegram does not return a country/market field with `payments.getPremiumGiftCodeOptions`. The probe therefore **never infers region from currency**. Supply `--market-region UA` only when that context is known independently. Omitting the flag records `region: null`.
+
+XTR offers are not emitted as `telegram_native` sourcing quotes. Their landed acquisition cost remains in `xtr_acquisition_estimates`, where it is derived from actual Stars top-up packages rather than from the nominal XTR amount.
+
+A normalized quote is measurement evidence, not automatic provider eligibility. The production provider decision rules still apply.
+
 ## Setup
 
 Create an isolated environment; this dependency is research-only and is not part of the core runtime:
@@ -50,20 +71,38 @@ The probe refuses to start if the session is not already authorized. It never as
 
 ## Run
 
-For the owner-observed 2026-08-11 Premium Bot baseline of UAH 499.00 for three months:
+For the owner-observed 2026-08-11 Premium Bot baseline of UAH 499.00 for three months and a known Ukrainian market context:
 
 ```bash
 python3 probe.py \
+  --market-region UA \
   --baseline-currency UAH \
   --baseline-minor 49900 \
   --baseline-months 3 \
   --pretty
 ```
 
+The resulting direct native quote includes the comparable shape:
+
+```json
+{
+  "schema": "sourcing-quote.v1",
+  "provider": "telegram_native",
+  "region": "UA",
+  "currency": "UAH",
+  "sku": "premium_3m",
+  "quantity": 1,
+  "acquisition_price_minor": 49900,
+  "unit_acquisition_price_minor": 49900
+}
+```
+
+The actual report also includes `offer_kind` and `observed_at`; the values above illustrate the normalized contract and are not hard-coded into the probe.
+
 To retain a reviewed report without retaining credentials:
 
 ```bash
-python3 probe.py --pretty --output /tmp/telegram-premium-sourcing.json
+python3 probe.py --market-region UA --pretty --output /tmp/telegram-premium-sourcing.json
 ```
 
 The output contains no Telegram user identifier and no session data.
@@ -84,7 +123,7 @@ A raw snapshot can be analyzed without Telegram connectivity:
 ```
 
 ```bash
-python3 probe.py --input snapshot.json --pretty
+python3 probe.py --input snapshot.json --market-region UA --pretty
 ```
 
 ## Interpretation rules
@@ -94,6 +133,7 @@ python3 probe.py --input snapshot.json --pretty
 - native-currency options are useful for observation and same-currency comparison, but Telegram's Premium documentation says unofficial clients should display and use only `XTR` options in the direct gift flow. A native-currency MTProto offer is therefore **not** treated as a production payment route for 0xda-market.
 - an XTR acquisition estimate is only the cost of replenishing the required Stars from currently returned top-up packages. Existing Stars balance, taxes, payment-provider effects, regional restrictions, and Fragment quotes can change the actual landed cost.
 - the tool never converts Telegram's developer reward rate into a buyer acquisition rate.
+- normalized quotes compare observations; they do not bypass route eligibility, fulfillment, refund, or production approval requirements.
 
 ## Official contracts
 
