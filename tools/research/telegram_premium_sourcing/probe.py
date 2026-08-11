@@ -40,6 +40,15 @@ def _exact_unit_amount(amount: int, users: int) -> int | str:
     return f"{amount // divisor}/{users // divisor}"
 
 
+def _normalize_region(region: str | None) -> str | None:
+    if region is None:
+        return None
+    normalized = region.strip().upper()
+    if len(normalized) != 2 or not normalized.isalpha():
+        raise ValueError("market_region must be a two-letter country code such as UA")
+    return normalized
+
+
 def _premium_dict(option: Any) -> dict[str, Any]:
     return {
         "users": _int(getattr(option, "users"), "users"),
@@ -93,6 +102,44 @@ def _validate_topup(option: dict[str, Any]) -> dict[str, Any]:
         "extended": bool(option.get("extended", False)),
         "store_product": option.get("store_product"),
     }
+
+
+def build_sourcing_quotes(
+    premium_options: list[dict[str, Any]],
+    *,
+    observed_at: str,
+    region: str | None = None,
+) -> list[dict[str, Any]]:
+    """Normalize native-currency Premium observations into comparable sourcing quotes.
+
+    Telegram does not return a country/market field with Premium gift options, so
+    region is operator-supplied context and is never inferred from currency.
+    XTR offers are excluded because their landed acquisition cost is represented
+    separately by Stars top-up analysis rather than by the nominal XTR amount.
+    """
+
+    if not observed_at:
+        raise ValueError("observed_at is required")
+    normalized_region = _normalize_region(region)
+    quotes = []
+    for option in premium_options:
+        offer = _validate_premium(option)
+        if offer["currency"] == "XTR":
+            continue
+        quotes.append({
+            "schema": "sourcing-quote.v1",
+            "provider": "telegram_native",
+            "region": normalized_region,
+            "currency": offer["currency"],
+            "sku": f"premium_{offer['months']}m",
+            "quantity": offer["users"],
+            "acquisition_price_minor": offer["amount_minor"],
+            "unit_acquisition_price_minor": offer["unit_amount_minor"],
+            "offer_kind": offer["offer_kind"],
+            "observed_at": observed_at,
+        })
+    quotes.sort(key=lambda item: (item["sku"], item["quantity"], item["currency"], item["acquisition_price_minor"]))
+    return quotes
 
 
 def min_topup_cost(target_stars: int, packages: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -301,6 +348,10 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--baseline-currency")
     result.add_argument("--baseline-minor", type=int)
     result.add_argument("--baseline-months", type=int, default=3)
+    result.add_argument(
+        "--market-region",
+        help="Operator-supplied two-letter market context (for example UA); never inferred from Telegram",
+    )
     return result
 
 
@@ -314,22 +365,29 @@ def main(argv: list[str] | None = None) -> int:
             premium, topups = asyncio.run(fetch_live())
             source = "telegram_mtproto"
 
+        collected_at = datetime.now(timezone.utc).isoformat()
+        analysis = analyze(
+            premium,
+            topups,
+            baseline_currency=args.baseline_currency,
+            baseline_minor=args.baseline_minor,
+            baseline_months=args.baseline_months,
+        )
         report = {
             "schema": "telegram-premium-sourcing.v1",
-            "collected_at": datetime.now(timezone.utc).isoformat(),
+            "collected_at": collected_at,
             "source": source,
             "read_methods": [
                 "payments.getPremiumGiftCodeOptions",
                 "payments.getStarsTopupOptions",
             ],
             "write_operations": False,
-            "analysis": analyze(
-                premium,
-                topups,
-                baseline_currency=args.baseline_currency,
-                baseline_minor=args.baseline_minor,
-                baseline_months=args.baseline_months,
+            "sourcing_quotes": build_sourcing_quotes(
+                analysis["premium_options"],
+                observed_at=collected_at,
+                region=args.market_region,
             ),
+            "analysis": analysis,
         }
         payload = json.dumps(report, indent=2 if args.pretty else None, sort_keys=True)
         if args.output:
