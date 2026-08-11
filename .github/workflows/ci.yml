@@ -100,6 +100,10 @@ jobs:
           EDGE_OWNER=infra
           ENV
           docker compose --file deploy/vps/compose.yaml --env-file deploy/vps/.env config --quiet
+      - name: Validate research probes
+        run: |
+          python3 -m py_compile tools/research/telegram_premium_sourcing/probe.py
+          python3 tools/research/telegram_premium_sourcing/test_probe.py
 
   docker:
     runs-on: ubuntu-latest
