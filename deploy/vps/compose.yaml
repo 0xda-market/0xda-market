@@ -11,12 +11,10 @@ services:
       - .env
     expose:
       - "10000"
-    ports:
-      - "127.0.0.1:10000:10000"
     networks:
       edge:
         aliases:
-          - api
+          - market-api-${DEPLOY_ENV}
     security_opt:
       - no-new-privileges:true
     stop_grace_period: 30s
@@ -96,7 +94,6 @@ services:
     image: alpine:3.22
     restart: unless-stopped
     init: true
-    network_mode: host
     user: "65532:65532"
     depends_on:
       api:
@@ -109,6 +106,8 @@ services:
     volumes:
       - ./mcp-control/bin/mcp-control:/opt/mcp-control/mcp-control:ro
       - ./mcp-control/config:/etc/mcp-control:ro
+    networks:
+      - edge
     tmpfs:
       - /run/mcp-control:rw,noexec,nosuid,nodev,size=1m,mode=0750,uid=65532,gid=65532
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777,uid=65532,gid=65532
