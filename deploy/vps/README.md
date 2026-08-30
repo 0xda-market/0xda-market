@@ -2,202 +2,143 @@
 
 This directory deploys the provider-agnostic `0xda-market` application workloads to the shared Ubuntu VPS.
 
-The public edge is **not** part of this product deployment. Caddy, TLS state, public ports `80/443`, and host/path routing are owned by [`0x0sky/infra`](https://github.com/0x0sky/infra).
+The public edge is not part of this product deployment. Caddy, TLS state, public ports `80/443`, host/path routing, and the external `nilx-edge` network contract are owned by [`0x0sky/infra`](https://github.com/0x0sky/infra).
 
-The client bot is deployed independently from `0xda-market/telegram-bot`. Both workloads attach to the external Docker network `nilx-edge` and expose stable internal aliases consumed by the shared edge.
+## Runtime identities
+
+Development and production are independent Compose projects and may stay online at the same time:
+
+| Environment | API edge alias | Public API |
+| --- | --- | --- |
+| `production` | `market-api-production:10000` | `https://0xda-market.nilx.one/*` |
+| `development` | `market-api-development:10000` | private to `nilx-edge` |
+
+The matching Telegram runtimes are owned by `0xda-market/telegram-bot` and expose `market-bot-production:10000` and `market-bot-development:10000`.
+
+`0x0sky/infra` maps `/bot/*` to production and `/bot-test/*` to development. The development API remains private; the test bot talks to it directly over `nilx-edge`.
 
 ## Ownership boundary
 
-`0xda-market` owns:
+`0xda-market/core` owns:
 
-- the API image and release lifecycle;
-- the `api:10000` network contract;
-- database migrations and application health;
-- `mcp-control` integration;
-- public route verification after deployment.
+- API, refresh workers and their release lifecycle;
+- environment-specific database/secrets;
+- `market-api-<environment>:10000` identities;
+- core health and migrations;
+- its own `mcp-control` observer.
 
-`0x0sky/infra` owns:
+It does not own:
 
-- Caddy and automatic TLS;
-- public TCP ports `80` and `443`;
-- the `nilx-edge` network contract;
-- `${DOMAIN}` routing;
-- `/bot/*` routing to `market-bot:10000`;
-- shared-edge deployment and rollback.
+- Caddy, TLS or public ports;
+- Telegram bot runtime/health;
+- shared-edge deployment;
+- another environment's activation state.
 
-A product deployment must never create, remove, or reconfigure the shared Caddy service.
+A core deployment must never mutate Caddy or fail because the bot workload is unavailable.
 
-## Current deployment contract
+## GitHub delivery
 
-The repository has one `Deploy` workflow:
+Deployment is manual-only through `.github/workflows/deploy-vps.yml`.
 
-| Invocation | Source | GitHub environment | Runtime directory | Database |
-| --- | --- | --- | --- | --- |
-| merged pull request into `master` | exact merge commit | `development` | `environments/development` | test Supabase |
-| manual dispatch | explicit branch, tag, or commit | `development` or `production` | matching environment directory | environment-owned |
+- `development` deploys the exact commit selected by GitHub's workflow ref selector.
+- `production` must be dispatched from `master` and requires an explicit immutable Git tag.
+- merge does not deploy either environment.
+- production and development use independent concurrency groups, release directories and Compose projects.
+- a failed activation attempts to restore only the previous release of the same environment.
 
-Synchronizing an open pull request no longer creates a deployment run. Closing a
-pull request without merging skips the deploy job. A manual production deployment
-uses the protected `production` GitHub Environment and requires the compatible
-core/bot release pair, runtime configuration, and recovery plan.
+Required GitHub Environment configuration for `development` and `production`:
+
+- secret `SSH_HOST`;
+- secret `SSH_USER`;
+- secret `SSH_PRIVATE_KEY`;
+- variable `SSH_DEPLOYMENT_PATH=/opt/0xda-market`;
+- variable `SSH_PORT=22022`.
 
 ## VPS layout
 
 ```text
-/opt/0xda-market/
-  environments/
-    development/
-      current -> releases/<sha>
-      releases/
-      shared/.env
-    production/
-      current -> releases/<sha>
-      releases/
-      shared/.env
-
-/opt/0xda-market-bot/
-  environments/
-    development/
-      current -> releases/<sha>
-      releases/
-      shared/.env
-    production/
-      current -> releases/<sha>
-      releases/
-      shared/.env
-
-/opt/infra/
-  environments/
-    development/
-      current -> releases/<sha>
-      releases/
-      shared/.env
-
-/opt/0xda-market-runtime/
-  active-environment
+/opt/0xda-market/environments/
+  development/
+    current -> releases/<sha>
+    releases/
+    shared/.env
+  production/
+    current -> releases/<sha>
+    releases/
+    shared/.env
 ```
 
-## GitHub environments
+There is no global `active-environment` switch in the canonical deployment model.
 
-Configure every available deployment environment with these secrets:
+## Runtime files
 
-- `SSH_HOST`
-- `SSH_USER` (`deploy`)
-- `SSH_PRIVATE_KEY`
-
-And these variables:
-
-- `SSH_DEPLOYMENT_PATH=/opt/0xda-market`
-- `SSH_PORT=22022`
-
-## Runtime file
-
-The development runtime file is:
-
-```text
-/opt/0xda-market/environments/development/shared/.env
-```
-
-Start from `.env.example`:
+Start development from `.env.example`. Important infrastructure fields are:
 
 ```env
 DEPLOY_ENV=development
 DOMAIN=0xda-market.nilx.one
 MARKET_EDGE_NETWORK=nilx-edge
 EDGE_OWNER=infra
-DATABASE_URL=<development Supabase URL>
-PUBLIC_API_TOKEN=<development token>
-MANUAL_PROVIDER_TOKEN=<development token>
-MARKETPLACE_MIN_MARGIN_BPS=100
-MARKETPLACE_SUPPLY_BUFFER_BPS=100
-MARKETPLACE_VARIABLE_FEE_BPS=0
-MARKETPLACE_FIXED_COST_USDT=0
-FX_RATE_PROVIDER=coinbase
-FX_RATE_REFRESH_INTERVAL_SECONDS=300
-FX_RATE_RETRY_INTERVAL_SECONDS=60
-FX_RATE_REQUEST_TIMEOUT_SECONDS=10
-FX_RATE_MAX_AGE_SECONDS=3600
+VERIFY_PUBLIC_HTTPS=0
+```
+
+Production uses:
+
+```env
+DEPLOY_ENV=production
+DOMAIN=0xda-market.nilx.one
+MARKET_EDGE_NETWORK=nilx-edge
+EDGE_OWNER=infra
 VERIFY_PUBLIC_HTTPS=1
 ```
 
-`EDGE_OWNER=infra` is a migration safety gate. Activation fails before Compose mutation unless the standalone shared edge has already been cut over and verified.
+Development core is intentionally not public. Its Telegram test client should use:
 
-Protect runtime files:
-
-```sh
-chown deploy:deploy /opt/0xda-market/environments/*/shared/.env
-chmod 0600 /opt/0xda-market/environments/*/shared/.env
+```text
+http://market-api-development:10000
 ```
+
+Production bot should use:
+
+```text
+http://market-api-production:10000
+```
+
+Protect runtime files with mode `0600`.
 
 ## Deployment behavior
 
-A merged pull request into `master` deploys its exact merge commit to
-`development`. Pull-request CI events are not deployment triggers.
+`deploy.sh` validates the environment and edge ownership before activation, builds the API runtime, starts the environment-specific Compose project, waits for API and `mcp-control` health, verifies the expected `market-api-<environment>` alias, and validates only the core server through `mcp-control`.
 
-A manual run requires both:
+The observer runs on `nilx-edge`; it no longer depends on host loopback ports. The core deployment deliberately does not inspect or gate on Telegram bot health.
 
-- `source_ref`: branch, tag, or commit to deploy;
-- `environment`: `development` or `production`.
+Production can additionally verify its public `/health` and complete WebApp bootstrap through the independently deployed shared edge. Development health remains internal because the development API is not a public surface.
 
-The selected reference is resolved to an immutable commit before upload. Automatic
-merge deployment stages development when it is inactive and refreshes it when it
-is active. Manual dispatch force-activates the explicitly selected environment.
-There is no separate environment-switch workflow.
+## Cross-environment verification
 
-- staging builds and validates the release without changing the active stack;
-- activation requires `EDGE_OWNER=infra`;
-- only `api` and `mcp-control` belong to this Compose project;
-- `docker compose up --remove-orphans` cannot remove the standalone infra Caddy because it uses a different Compose project;
-- application health and public HTTPS remain deployment gates;
-- failed activation attempts to restore the previous application release;
-- successful deployment publishes `deploy/vps-core-<environment>` on the exact release commit.
+`verify.sh` verifies one environment per invocation:
 
-The shared edge forwards:
-
-- `${DOMAIN}/bot/*` to `market-bot:10000`, stripping `/bot`;
-- all other `${DOMAIN}` requests to `api:10000`.
-
-That routing contract is canonical in `0x0sky/infra`, not in this repository.
-
-## Migration gate
-
-Do not merge the edge-extraction PR until all of the following are true:
-
-1. `0x0sky/infra` edge contract is merged and green;
-2. its `validate` workflow succeeds against the VPS;
-3. an explicitly authorized `activate` cutover succeeds;
-4. `mind.nilx.one`, `${DOMAIN}/health`, and `${DOMAIN}/bot/health` pass public verification;
-5. the core shared `.env` contains `EDGE_OWNER=infra`.
-
-Before those conditions, the legacy Caddy remains the active edge.
-
-## Verification
-
-Run the product verifier after deployment and every VPS reboot:
-
-```sh
-sudo -u deploy \
-  bash /opt/0xda-market/environments/development/current/deploy/vps/verify.sh
+```bash
+DEPLOY_ENV=production bash deploy/vps/verify.sh
+DEPLOY_ENV=development bash deploy/vps/verify.sh
 ```
 
-It validates:
+It checks the matching core and Telegram containers, `nilx-edge` membership, environment-specific aliases, local bot health, and — when enabled — the public route owned by `0x0sky/infra`:
 
-- API and bot container health;
-- `nilx-edge` membership;
-- local bot health;
-- public API and bot routes through the independently managed infra edge.
-
-Basic public checks:
-
-```sh
-curl -i https://0xda-market.nilx.one/health
-curl -i https://0xda-market.nilx.one/bot/health
+```text
+production:  /health + /bot/health
+development: /bot-test/health
 ```
 
-## Safety gates
+## Rollout order
 
-- Keep `REGISTER_TELEGRAM_WEBHOOK=0` until local and public health checks pass.
-- Keep application host ports bound to loopback; public access must pass through the shared edge.
-- Do not activate production until its database, tokens, bot pairing, CI, and recovery plan are reviewed.
-- Do not merge this migration before the infra edge cutover.
-- Do not delete the legacy Caddy volumes; `0x0sky/infra` adopts them to preserve TLS state.
+For the side-by-side migration:
+
+1. merge the core and Telegram runtime identity changes with green CI;
+2. deploy both core environments manually;
+3. deploy both Telegram environments manually;
+4. validate the `0x0sky/infra` edge candidate against live Caddy;
+5. explicitly deploy the shared edge;
+6. verify production API, production Telegram, and test Telegram independently.
+
+Merging any repository is not a production deployment.
