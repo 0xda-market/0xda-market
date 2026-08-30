@@ -12,7 +12,7 @@
     },
     "health": {
       "adapter": "local-http-v1",
-      "endpoint": "http://127.0.0.1:10000/health",
+      "endpoint": "http://__MARKET_API_ALIAS__:10000/health",
       "timeoutSeconds": 3
     },
     "logs": {
