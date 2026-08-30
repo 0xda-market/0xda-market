@@ -6,9 +6,8 @@ trap 'rm -rf "$root"' EXIT
 
 core_root="$root/core"
 bot_root="$root/bot"
-runtime_root="$root/runtime"
 commands="$root/bin"
-mkdir -p "$commands" "$runtime_root"
+mkdir -p "$commands"
 
 for component in core bot; do
   release="$root/$component/environments/development/releases/release-1"
@@ -20,7 +19,6 @@ for component in core bot; do
   : >"$release/deploy/vps/compose.yaml"
   ln -s "$release" "$root/$component/environments/development/current"
 done
-printf 'development\n' >"$runtime_root/active-environment"
 
 cat >"$commands/systemctl" <<'SYSTEMCTL'
 #!/usr/bin/env bash
@@ -42,7 +40,6 @@ fi
 
 if [[ "$1" == "compose" ]]; then
   shift
-  service=""
   while (($#)); do
     case "$1" in
       --file|--env-file|--project-directory)
@@ -54,8 +51,7 @@ if [[ "$1" == "compose" ]]; then
       ps)
         shift
         [[ "${1:-}" == "--quiet" ]] && shift
-        service="${1:-}"
-        printf '%s-container\n' "$service"
+        printf '%s-container\n' "${1:-}"
         exit 0
         ;;
       exec)
@@ -70,6 +66,7 @@ fi
 
 if [[ "$1" == "inspect" ]]; then
   format="$3"
+  container="${4:-}"
   case "$format" in
     *'.State.Running'*) printf 'true\n' ;;
     *'RestartPolicy.Name'*) printf 'unless-stopped\n' ;;
@@ -77,6 +74,13 @@ if [[ "$1" == "inspect" ]]; then
     *'max-size'*) printf '10m\n' ;;
     *'max-file'*) printf '3\n' ;;
     *'.State.Health'*) printf 'healthy\n' ;;
+    *'Aliases'*)
+      case "$container" in
+        api-container) printf 'market-api-development\n' ;;
+        bot-container) printf 'market-bot-development\n' ;;
+        *) exit 1 ;;
+      esac
+      ;;
     *'.NetworkSettings.Networks'*) printf 'nilx-edge\n' ;;
     *) exit 1 ;;
   esac
@@ -91,7 +95,7 @@ output="$({
   PATH="$commands:$PATH" \
   CORE_DEPLOY_PATH="$core_root" \
   BOT_DEPLOY_PATH="$bot_root" \
-  VPS_RUNTIME_PATH="$runtime_root" \
+  DEPLOY_ENV=development \
   VERIFY_SYSTEMD=1 \
   VERIFY_PUBLIC_HTTPS=1 \
   bash "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/deploy/vps/verify.sh"
@@ -100,8 +104,8 @@ output="$({
 grep -Fq 'ok: Docker boot service' <<<"$output"
 grep -Fq 'ok: core API' <<<"$output"
 grep -Fq 'ok: client bot' <<<"$output"
-grep -Fq 'ok: core API network=nilx-edge' <<<"$output"
-grep -Fq 'ok: client bot network=nilx-edge' <<<"$output"
+grep -Fq 'ok: core API network=nilx-edge alias=market-api-development' <<<"$output"
+grep -Fq 'ok: client bot network=nilx-edge alias=market-bot-development' <<<"$output"
 grep -Fq 'ok: public HTTPS health through 0x0sky/infra edge' <<<"$output"
 grep -Fq 'VPS verification passed: environment=development' <<<"$output"
 grep -Fq 'network=nilx-edge edge-owner=infra' <<<"$output"
