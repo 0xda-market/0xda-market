@@ -1,18 +1,8 @@
 name: Deploy
 
 on:
-  pull_request:
-    branches:
-      - master
-    types:
-      - closed
   workflow_dispatch:
     inputs:
-      source_ref:
-        description: Branch, tag, or commit to deploy
-        required: true
-        default: master
-        type: string
       environment:
         description: GitHub and VPS environment
         required: true
@@ -21,35 +11,62 @@ on:
         options:
           - development
           - production
+      production_tag:
+        description: Production tag (required only for production; ignored for development)
+        required: false
+        type: string
 
 permissions:
   contents: read
   statuses: write
 
 concurrency:
-  group: vps-api-${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'development' }}
+  group: vps-api-${{ inputs.environment }}
   cancel-in-progress: false
 
 jobs:
   deploy:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
-      name: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'development' }}
+      name: ${{ inputs.environment }}
     env:
-      DEPLOY_ENV: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'development' }}
-      RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.event.pull_request.merge_commit_sha }}
-      FORCE_ACTIVATE: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+      DEPLOY_ENV: ${{ inputs.environment }}
+      WORKFLOW_REF: ${{ github.ref }}
+      SELECTED_RELEASE_SHA: ${{ github.sha }}
+      PRODUCTION_TAG: ${{ inputs.production_tag || '' }}
       SSH_HOST: ${{ secrets.SSH_HOST }}
       SSH_USER: ${{ secrets.SSH_USER }}
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
       SSH_PORT: ${{ vars.SSH_PORT }}
       SSH_DEPLOYMENT_PATH: ${{ vars.SSH_DEPLOYMENT_PATH }}
-      VPS_RUNTIME_PATH: /opt/0xda-market-runtime
       MCP_CONTROL_REF: 2f9766ea6993716d2d79ad91a4ce40f18baa44ef
 
     steps:
+      - name: Resolve deployment source
+        run: |
+          set -Eeuo pipefail
+          case "$DEPLOY_ENV" in development|production) ;; *) exit 1 ;; esac
+
+          if [[ "$DEPLOY_ENV" == production ]]; then
+            if [[ "$WORKFLOW_REF" != refs/heads/master ]]; then
+              echo "::error::Run the production workflow from master; select the release with Production tag"
+              exit 1
+            fi
+            if [[ -z "$PRODUCTION_TAG" ]]; then
+              echo "::error::Production tag is required for production deployment"
+              exit 1
+            fi
+            if ! git check-ref-format "refs/tags/$PRODUCTION_TAG"; then
+              echo "::error::Production tag is not a valid Git tag"
+              exit 1
+            fi
+            echo "RELEASE_REF=refs/tags/$PRODUCTION_TAG" >>"$GITHUB_ENV"
+          else
+            test -n "$SELECTED_RELEASE_SHA"
+            echo "RELEASE_REF=$SELECTED_RELEASE_SHA" >>"$GITHUB_ENV"
+          fi
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_REF }}
@@ -65,11 +82,6 @@ jobs:
         run: |
           set -Eeuo pipefail
           case "$DEPLOY_ENV" in development|production) ;; *) exit 1 ;; esac
-          case "$FORCE_ACTIVATE" in 0|1) ;; *) exit 1 ;; esac
-          if [[ "${{ github.event_name }}" != "workflow_dispatch" ]]; then
-            test "$DEPLOY_ENV" = development
-            test "$FORCE_ACTIVATE" = 0
-          fi
           missing=0
           for name in SSH_HOST SSH_USER SSH_PRIVATE_KEY SSH_DEPLOYMENT_PATH SSH_PORT; do
             if [[ -z "${!name:-}" ]]; then
@@ -156,11 +168,11 @@ jobs:
           tar --exclude=.git --exclude='.deps' --exclude='deploy/vps/.env' -czf "$archive" .
           scp -P "$SSH_PORT" "$archive" "$SSH_USER@$SSH_HOST:/tmp/"
 
-      - name: Stage or activate environment
+      - name: Activate environment
         run: |
           set -Eeuo pipefail
           ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
-            "DEPLOY_PATH='$SSH_DEPLOYMENT_PATH' RUNTIME_PATH='$VPS_RUNTIME_PATH' DEPLOY_ENV='$DEPLOY_ENV' FORCE_ACTIVATE='$FORCE_ACTIVATE' RELEASE_SHA='$RELEASE_SHA' bash -s" <<'REMOTE'
+            "DEPLOY_PATH='$SSH_DEPLOYMENT_PATH' DEPLOY_ENV='$DEPLOY_ENV' RELEASE_SHA='$RELEASE_SHA' bash -s" <<'REMOTE'
           set -Eeuo pipefail
 
           environment_root="$DEPLOY_PATH/environments/$DEPLOY_ENV"
@@ -168,12 +180,10 @@ jobs:
           release_dir="$environment_root/releases/$RELEASE_SHA"
           shared_env="$environment_root/shared/.env"
           current_link="$environment_root/current"
-          active_environment=""
           previous_release="$(readlink -f "$current_link" 2>/dev/null || true)"
 
           test -f "$shared_env"
           grep -qx "DEPLOY_ENV=$DEPLOY_ENV" "$shared_env"
-          case "$FORCE_ACTIVATE" in 0|1) ;; *) exit 1 ;; esac
 
           rm -rf "$release_dir"
           mkdir -p "$release_dir"
@@ -181,19 +191,11 @@ jobs:
           rm -f "$archive"
           ln -sfn "$shared_env" "$release_dir/deploy/vps/.env"
 
-          if [[ -f "$RUNTIME_PATH/active-environment" ]]; then
-            active_environment="$(<"$RUNTIME_PATH/active-environment")"
-          fi
-
-          if [[ "$FORCE_ACTIVATE" == "1" || "$active_environment" == "$DEPLOY_ENV" ]]; then
-            if ! DEPLOY_MODE=activate bash "$release_dir/deploy/vps/deploy.sh"; then
-              if [[ -n "$previous_release" && -d "$previous_release/deploy/vps" ]]; then
-                bash "$release_dir/deploy/vps/rollback.sh" "$previous_release" "$shared_env" || true
-              fi
-              exit 1
+          if ! bash "$release_dir/deploy/vps/deploy.sh"; then
+            if [[ -n "$previous_release" && -d "$previous_release/deploy/vps" ]]; then
+              bash "$release_dir/deploy/vps/rollback.sh" "$previous_release" "$shared_env" || true
             fi
-          else
-            DEPLOY_MODE=stage bash "$release_dir/deploy/vps/deploy.sh"
+            exit 1
           fi
 
           ln -sfn "$release_dir" "$current_link"

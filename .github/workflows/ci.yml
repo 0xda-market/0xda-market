@@ -91,9 +91,7 @@ jobs:
           bash -n deploy/vps/bootstrap-ubuntu.sh
           bash -n deploy/vps/deploy.sh
           bash -n deploy/vps/rollback.sh
-          bash -n deploy/vps/switch-environment.sh
           bash -n deploy/vps/verify.sh
-          bash test/vps_switch_test.sh
           bash test/vps_verify_test.sh
           cat >deploy/vps/.env <<'ENV'
           DEPLOY_ENV=development

@@ -8,23 +8,15 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
-deploy_mode="${DEPLOY_MODE:-activate}"
 deploy_environment="$(sed -n 's/^DEPLOY_ENV=//p' .env | tail -n 1)"
 edge_network="${MARKET_EDGE_NETWORK:-nilx-edge}"
 edge_owner="$(sed -n 's/^EDGE_OWNER=//p' .env | tail -n 1)"
+api_alias="market-api-${deploy_environment}"
 
 if [[ "$edge_network" != "nilx-edge" ]]; then
   echo "MARKET_EDGE_NETWORK must be nilx-edge" >&2
   exit 1
 fi
-
-case "$deploy_mode" in
-  stage|activate) ;;
-  *)
-    echo "Unsupported DEPLOY_MODE: $deploy_mode" >&2
-    exit 1
-    ;;
-esac
 
 case "$deploy_environment" in
   development|production) ;;
@@ -33,6 +25,11 @@ case "$deploy_environment" in
     exit 1
     ;;
 esac
+
+if [[ "$edge_owner" != "infra" ]]; then
+  echo "EDGE_OWNER must be infra before activating the edge-decoupled product stack" >&2
+  exit 1
+fi
 
 case "$(uname -m)" in
   x86_64|amd64)
@@ -54,6 +51,15 @@ if [[ ! -x "$mcp_binary" ]]; then
 fi
 ln -sfn "mcp-control-${mcp_arch}" mcp-control/bin/mcp-control
 
+core_server_config="mcp-control/config/servers.d/0xda-market.json"
+if grep -q '__MARKET_API_ALIAS__' "$core_server_config"; then
+  sed -i "s/__MARKET_API_ALIAS__/${api_alias}/g" "$core_server_config"
+fi
+if ! grep -q "http://${api_alias}:10000/health" "$core_server_config"; then
+  echo "mcp-control core health endpoint does not match $api_alias" >&2
+  exit 1
+fi
+
 if ! docker network inspect "$edge_network" >/dev/null 2>&1; then
   docker network create "$edge_network" >/dev/null
 fi
@@ -62,20 +68,10 @@ docker compose config --quiet
 docker compose pull mcp-control
 docker compose build --pull api fx-refresh
 
-if [[ "$deploy_mode" == "stage" ]]; then
-  echo "0xda-market $deploy_environment release staged"
-  exit 0
-fi
-
-if [[ "$edge_owner" != "infra" ]]; then
-  echo "EDGE_OWNER must be infra before activating the edge-decoupled product stack" >&2
-  exit 1
-fi
-
 if ! docker compose up --detach --remove-orphans; then
   echo "Docker Compose failed while starting the VPS stack" >&2
   docker compose ps >&2 || true
-  docker compose logs --tail 200 api fx-refresh mcp-control >&2 || true
+  docker compose logs --tail 200 api fx-refresh price-refresh mcp-control >&2 || true
   exit 1
 fi
 
@@ -114,27 +110,33 @@ wait_for_healthy() {
 wait_for_healthy api
 wait_for_healthy mcp-control
 
+api_container="$(docker compose ps -q api)"
+if ! docker inspect "$api_container" \
+  --format '{{range $network, $config := .NetworkSettings.Networks}}{{range $config.Aliases}}{{println .}}{{end}}{{end}}' \
+  | grep -qx "$api_alias"; then
+  echo "Expected edge alias is missing: $api_alias" >&2
+  exit 1
+fi
+
 docker compose exec -T mcp-control \
   /opt/mcp-control/mcp-control servers validate \
   --config /etc/mcp-control/agent.json
 
-for server_id in 0xda-market 0xda-market-bot; do
-  snapshot="$(
-    docker compose exec -T mcp-control \
-      /opt/mcp-control/mcp-control servers inspect "$server_id" \
-      --config /etc/mcp-control/agent.json
-  )"
-  printf '%s\n' "$snapshot"
+snapshot="$(
+  docker compose exec -T mcp-control \
+    /opt/mcp-control/mcp-control servers inspect 0xda-market \
+    --config /etc/mcp-control/agent.json
+)"
+printf '%s\n' "$snapshot"
 
-  if ! grep -q '"state": "healthy"' <<<"$snapshot"; then
-    echo "mcp-control did not observe $server_id as healthy" >&2
-    docker compose logs --tail 200 mcp-control >&2 || true
-    exit 1
-  fi
-done
+if ! grep -q '"state": "healthy"' <<<"$snapshot"; then
+  echo "mcp-control did not observe 0xda-market as healthy" >&2
+  docker compose logs --tail 200 mcp-control >&2 || true
+  exit 1
+fi
 
 verify_public_https="$(sed -n 's/^VERIFY_PUBLIC_HTTPS=//p' .env | tail -n 1)"
-if [[ "$verify_public_https" == "1" ]]; then
+if [[ "$verify_public_https" == "1" && "$deploy_environment" == "production" ]]; then
   domain="$(sed -n 's/^DOMAIN=//p' .env | tail -n 1)"
   if [[ -z "$domain" ]]; then
     echo "DOMAIN is required when VERIFY_PUBLIC_HTTPS=1" >&2
@@ -149,15 +151,6 @@ if [[ "$verify_public_https" == "1" ]]; then
     --retry-all-errors \
     --retry-delay 5 \
     "https://${domain}/health" >/dev/null
-
-  curl \
-    --fail \
-    --silent \
-    --show-error \
-    --retry 12 \
-    --retry-all-errors \
-    --retry-delay 5 \
-    "https://${domain}/bot/health" >/dev/null
 
   bootstrap_file="$(mktemp)"
   if ! curl \
@@ -189,8 +182,11 @@ if [[ "$verify_public_https" == "1" ]]; then
     exit 1
   fi
   rm -f "$bootstrap_file"
+elif [[ "$verify_public_https" == "1" ]]; then
+  echo "development core is intentionally private to nilx-edge; skipping public API verification"
 fi
 
 docker image prune --force --filter 'until=168h' >/dev/null
 
-echo "0xda-market, 0xda-market-bot, mcp-control, and WebApp bootstrap are healthy on $deploy_environment"
+echo "0xda-market core $deploy_environment is healthy"
+echo "Edge alias verified: $api_alias"
